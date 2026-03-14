@@ -12,13 +12,14 @@
 
 import { Router } from 'express';
 import healthRoutes from './health.routes.js';
+import uploadRoutes from './upload.routes.js';
 
 const router = Router();
 
 router.use('/health', healthRoutes);
+router.use('/upload', uploadRoutes);
 
 // As you add features, you'll add lines like:
-// router.use('/upload', uploadRoutes);
 // router.use('/jobs', jobRoutes);
 
 export default router;

@@ -7,6 +7,7 @@ import logger from './utils/logger.js';
 import requestLogger from './middleware/requestLogger.js';
 import errorHandler from './middleware/errorHandler.js';
 import routes from './routes/index.js';
+import { initializeStorage } from './services/storage.service.js';
 
 // ── Create the app ─────────────────────────────────────────────────────
 const app = express();
@@ -39,8 +40,20 @@ app.use((req, res, _next) => {
 app.use(errorHandler);
 
 // ── Start the server ───────────────────────────────────────────────────
-app.listen(serverConfig.port, () => {
-  logger.info(`Server running on http://localhost:${serverConfig.port}`, {
-    env: serverConfig.nodeEnv,
+// We use an async IIFE (Immediately Invoked Function Expression) because
+// top-level await works in ES modules, but wrapping startup in a function
+// gives us a clean place to handle initialization errors.
+const startServer = async () => {
+  await initializeStorage();
+
+  app.listen(serverConfig.port, () => {
+    logger.info(`Server running on http://localhost:${serverConfig.port}`, {
+      env: serverConfig.nodeEnv,
+    });
   });
+};
+
+startServer().catch((err) => {
+  logger.error('Failed to start server', { error: err.message });
+  process.exit(1);
 });
