@@ -46,10 +46,10 @@ const operations = {
   },
   compress: {
     handler: compressPDF,
-    description: 'Reduce PDF file size',
+    description: 'Reduce PDF file size with selectable compression levels',
     minFiles: 1,
     maxFiles: 1,
-    acceptsOptions: false,
+    acceptsOptions: true,
   },
   // ─── ADDING A NEW OPERATION ──────────────────────────
   // To add "watermark" support, you would:

@@ -11,7 +11,7 @@ import path from 'node:path';
 import { getOperation, listOperations } from '../services/pdf/index.js';
 import { storageConfig } from '../config/index.js';
 import { ValidationError } from '../utils/errors.js';
-import { generateUniqueFilename } from '../utils/fileHelpers.js';
+import { buildOperationDownloadName, generateUniqueFilename } from '../utils/fileHelpers.js';
 
 // POST /api/pdf/:operation -- execute a PDF operation
 export const processOperation = async (req, res, next) => {
@@ -36,7 +36,8 @@ export const processOperation = async (req, res, next) => {
     }
 
     // Build the output path in the "processed" directory
-    const outputFilename = generateUniqueFilename(`${operation}-result.pdf`);
+    const downloadName = buildOperationDownloadName(files, operation);
+    const outputFilename = generateUniqueFilename(downloadName);
     const outputPath = path.join(storageConfig.processedDir, outputFilename);
 
     // Extract input paths from the multer file objects
@@ -46,6 +47,7 @@ export const processOperation = async (req, res, next) => {
     const options = {};
     if (req.body.start) options.start = parseInt(req.body.start, 10);
     if (req.body.end) options.end = parseInt(req.body.end, 10);
+    if (req.body.level) options.level = req.body.level;
 
     // CALL THE HANDLER -- this is where the registry pattern shines.
     // We don't care whether it's merge, split, or compress.
@@ -62,7 +64,8 @@ export const processOperation = async (req, res, next) => {
       message: `Operation "${operation}" completed successfully`,
       data: {
         ...result,
-        downloadUrl: `/api/pdf/download/${outputFilename}`,
+        downloadName,
+        downloadUrl: `/api/pdf/download/${outputFilename}?name=${encodeURIComponent(downloadName)}`,
       },
     });
   } catch (err) {
@@ -82,7 +85,10 @@ export const getOperations = (_req, res) => {
 export const downloadProcessed = (req, res, next) => {
   try {
     const filePath = path.join(storageConfig.processedDir, req.params.filename);
-    res.download(filePath, req.params.filename);
+    const downloadName = typeof req.query.name === 'string'
+      ? path.basename(req.query.name)
+      : req.params.filename;
+    res.download(filePath, downloadName);
   } catch (err) {
     next(err);
   }

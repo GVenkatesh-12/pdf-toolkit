@@ -21,7 +21,7 @@ import * as queue from '../services/queue.service.js';
 import { getOperation } from '../services/pdf/index.js';
 import { storageConfig } from '../config/index.js';
 import { ValidationError, NotFoundError } from '../utils/errors.js';
-import { generateUniqueFilename } from '../utils/fileHelpers.js';
+import { buildOperationDownloadName, generateUniqueFilename } from '../utils/fileHelpers.js';
 
 // POST /api/jobs -- create a new processing job
 export const createJob = (req, res, next) => {
@@ -52,13 +52,15 @@ export const createJob = (req, res, next) => {
     }
 
     // Build the output path
-    const outputFilename = generateUniqueFilename(`${operation}-result.pdf`);
+    const downloadName = buildOperationDownloadName(files, operation);
+    const outputFilename = generateUniqueFilename(downloadName);
     const outputPath = path.join(storageConfig.processedDir, outputFilename);
 
     // Parse operation-specific options
     const options = {};
     if (req.body.start) options.start = parseInt(req.body.start, 10);
     if (req.body.end) options.end = parseInt(req.body.end, 10);
+    if (req.body.level) options.level = req.body.level;
 
     // Add the job to the queue -- this returns IMMEDIATELY
     const job = queue.addJob({
@@ -66,6 +68,7 @@ export const createJob = (req, res, next) => {
       inputPaths: files.map((f) => f.path),
       outputPath,
       outputFilename,
+      downloadName,
       options,
     });
 
@@ -79,6 +82,7 @@ export const createJob = (req, res, next) => {
         jobId: job.id,
         state: job.state,
         pollUrl: `/api/jobs/${job.id}`,
+        downloadName,
       },
     });
   } catch (err) {
@@ -99,7 +103,9 @@ export const getJobStatus = (req, res, next) => {
 
     // If job is completed, add the download URL
     if (job.state === queue.JOB_STATES.COMPLETED) {
-      response.downloadUrl = `/api/jobs/${job.id}/download`;
+      response.downloadUrl = `/api/jobs/${job.id}/download?name=${encodeURIComponent(
+        job.data.downloadName || job.data.outputFilename
+      )}`;
     }
 
     res.json({
@@ -127,7 +133,10 @@ export const downloadJobResult = (req, res, next) => {
     }
 
     const filePath = job.data.outputPath;
-    res.download(filePath, job.data.outputFilename);
+    const downloadName = typeof req.query.name === 'string'
+      ? path.basename(req.query.name)
+      : (job.data.downloadName || job.data.outputFilename);
+    res.download(filePath, downloadName);
   } catch (err) {
     next(err);
   }

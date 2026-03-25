@@ -1,54 +1,163 @@
-// COMPRESS PDF -- reduces file size by re-serializing.
-//
-// HONEST LIMITATION: pdf-lib doesn't do deep image recompression.
-// For a production iLovePDF-like app, you'd use tools like Ghostscript
-// or qpdf for heavy compression. But pdf-lib's re-serialization still
-// strips unused objects, duplicate fonts, and metadata -- often giving
-// 10-30% reduction on bloated PDFs.
-//
-// The key learning here isn't the compression algorithm -- it's that
-// this function follows the SAME PATTERN as merge and split:
-//   (inputPath, outputPath, options) → result
-//
-// That uniformity is what powers the registry.
-
 import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { PDFDocument } from 'pdf-lib';
-import { formatFileSize } from '../../utils/fileHelpers.js';
+import { ValidationError } from '../../utils/errors.js';
+import { formatFileSize, generateUniqueFilename } from '../../utils/fileHelpers.js';
+import logger from '../../utils/logger.js';
 
-// inputPath:  string -- path to the source PDF
-// outputPath: string -- where to save the compressed PDF
-// Returns: { outputPath, originalSize, compressedSize, savedBytes, savedPercent }
-export const compressPDF = async (inputPath, outputPath) => {
-  const pdfBytes = await fs.readFile(inputPath);
-  const originalSize = pdfBytes.length;
+const execFileAsync = promisify(execFile);
 
-  // Load and re-save. pdf-lib rebuilds the PDF structure cleanly,
-  // dropping orphaned objects and optimizing the cross-reference table.
+const DEFAULT_LEVEL = 'best';
+
+const COMPRESSION_PRESETS = {
+  mild: {
+    label: 'mild',
+    ghostscriptSetting: '/printer',
+  },
+  best: {
+    label: 'best',
+    ghostscriptSetting: '/ebook',
+  },
+  heavy: {
+    label: 'heavy',
+    ghostscriptSetting: '/screen',
+  },
+};
+
+let ghostscriptAvailable;
+
+const getCompressionPreset = (level = DEFAULT_LEVEL) => {
+  const normalizedLevel = String(level).toLowerCase();
+  const preset = COMPRESSION_PRESETS[normalizedLevel];
+
+  if (!preset) {
+    throw new ValidationError(
+      `Unknown compression level "${level}". Available levels: mild, best, heavy.`
+    );
+  }
+
+  return {
+    level: normalizedLevel,
+    ...preset,
+  };
+};
+
+const canUseGhostscript = async () => {
+  if (typeof ghostscriptAvailable === 'boolean') {
+    return ghostscriptAvailable;
+  }
+
+  try {
+    await execFileAsync('gs', ['--version']);
+    ghostscriptAvailable = true;
+  } catch {
+    ghostscriptAvailable = false;
+  }
+
+  return ghostscriptAvailable;
+};
+
+const createPdfLibCandidate = async (pdfBytes) => {
   const doc = await PDFDocument.load(pdfBytes, {
-    // These options help strip unnecessary data:
     updateMetadata: false,
   });
 
   const compressedBytes = await doc.save({
-    useObjectStreams: true,  // Packs small objects together (smaller file)
+    useObjectStreams: true,
     addDefaultPage: false,
   });
 
-  await fs.writeFile(outputPath, compressedBytes);
+  return {
+    bytes: compressedBytes,
+    engine: 'pdf-lib',
+    pageCount: doc.getPageCount(),
+  };
+};
 
-  const compressedSize = compressedBytes.length;
-  const savedBytes = originalSize - compressedSize;
-  const savedPercent = originalSize > 0
-    ? ((savedBytes / originalSize) * 100).toFixed(1)
+const createGhostscriptCandidate = async (inputPath, ghostscriptSetting) => {
+  if (!(await canUseGhostscript())) {
+    return null;
+  }
+
+  const tempOutputPath = path.join(
+    os.tmpdir(),
+    generateUniqueFilename('ghostscript-compressed.pdf')
+  );
+
+  try {
+    await execFileAsync('gs', [
+      '-sDEVICE=pdfwrite',
+      '-dCompatibilityLevel=1.4',
+      '-dNOPAUSE',
+      '-dQUIET',
+      '-dBATCH',
+      `-dPDFSETTINGS=${ghostscriptSetting}`,
+      `-sOutputFile=${tempOutputPath}`,
+      inputPath,
+    ]);
+
+    return {
+      bytes: await fs.readFile(tempOutputPath),
+      engine: 'ghostscript',
+    };
+  } catch (err) {
+    logger.warn('Ghostscript compression failed, using pdf-lib fallback', {
+      inputPath,
+      ghostscriptSetting,
+      error: err.message,
+    });
+    return null;
+  } finally {
+    await fs.rm(tempOutputPath, { force: true }).catch(() => {});
+  }
+};
+
+export const compressPDF = async (inputPath, outputPath, options = {}) => {
+  const preset = getCompressionPreset(options.level);
+  const pdfBytes = await fs.readFile(inputPath);
+  const originalSizeBytes = pdfBytes.length;
+
+  const pdfLibCandidate = await createPdfLibCandidate(pdfBytes);
+  const candidates = [pdfLibCandidate];
+
+  const ghostscriptCandidate = await createGhostscriptCandidate(
+    inputPath,
+    preset.ghostscriptSetting
+  );
+
+  if (ghostscriptCandidate) {
+    candidates.push(ghostscriptCandidate);
+  }
+
+  const bestCandidate = candidates.reduce((smallest, candidate) => {
+    return candidate.bytes.length < smallest.bytes.length ? candidate : smallest;
+  });
+
+  const finalBytes = bestCandidate.bytes.length < originalSizeBytes
+    ? bestCandidate.bytes
+    : pdfBytes;
+
+  await fs.writeFile(outputPath, finalBytes);
+
+  const compressedSizeBytes = finalBytes.length;
+  const savedBytesValue = Math.max(0, originalSizeBytes - compressedSizeBytes);
+  const savedPercent = originalSizeBytes > 0
+    ? ((savedBytesValue / originalSizeBytes) * 100).toFixed(1)
     : '0.0';
 
   return {
     outputPath,
-    pageCount: doc.getPageCount(),
-    originalSize: formatFileSize(originalSize),
-    compressedSize: formatFileSize(compressedSize),
-    savedBytes: formatFileSize(Math.max(0, savedBytes)),
+    pageCount: pdfLibCandidate.pageCount,
+    compressionLevel: preset.label,
+    compressionEngine: compressedSizeBytes < originalSizeBytes
+      ? bestCandidate.engine
+      : 'original',
+    originalSize: formatFileSize(originalSizeBytes),
+    compressedSize: formatFileSize(compressedSizeBytes),
+    savedBytes: formatFileSize(savedBytesValue),
     savedPercent: `${savedPercent}%`,
   };
 };

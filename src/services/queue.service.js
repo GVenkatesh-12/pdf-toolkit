@@ -201,6 +201,7 @@ export const formatJobForResponse = (job) => {
     id: job.id,
     state: job.state,
     operation: job.data.operation,
+    downloadName: job.data.downloadName,
     createdAt: new Date(job.createdAt).toISOString(),
     attempts: job.attempts,
   };

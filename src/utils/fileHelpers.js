@@ -25,3 +25,24 @@ export const formatFileSize = (bytes) => {
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   return `${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`;
 };
+
+const sanitizeBaseName = (name) => {
+  const normalized = name
+    .normalize('NFKD')
+    .replace(/[^\w\s-]/g, '')
+    .trim()
+    .replace(/[\s-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  return normalized || 'document';
+};
+
+export const buildOperationDownloadName = (files, operation) => {
+  const firstFile = files?.[0];
+  const originalName = firstFile?.originalname || 'document.pdf';
+  const originalBase = path.basename(originalName, path.extname(originalName));
+  const safeBase = sanitizeBaseName(originalBase);
+  const safeOperation = sanitizeBaseName(operation).toLowerCase();
+
+  return `${safeBase}_${safeOperation}.pdf`;
+};
