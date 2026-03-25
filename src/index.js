@@ -1,6 +1,8 @@
 // Load environment variables FIRST, before anything else imports config
 import 'dotenv/config';
 
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { serverConfig } from './config/index.js';
 import logger from './utils/logger.js';
@@ -8,6 +10,11 @@ import requestLogger from './middleware/requestLogger.js';
 import errorHandler from './middleware/errorHandler.js';
 import routes from './routes/index.js';
 import { initializeStorage } from './services/storage.service.js';
+import { startWorker } from './workers/pdf.worker.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const CLIENT_DIR = path.join(__dirname, '..', 'client');
 
 // ── Create the app ─────────────────────────────────────────────────────
 const app = express();
@@ -21,7 +28,11 @@ app.use(express.json());
 // requestLogger runs FIRST on every request
 app.use(requestLogger);
 
-// ── Routes ─────────────────────────────────────────────────────────────
+// ── Static files (frontend) ──────────────────────────────────────────
+// Serve the client/ folder as static files. This is how the frontend is delivered.
+app.use(express.static(CLIENT_DIR));
+
+// ── API Routes ──────────────────────────────────────────────────────
 // All routes are prefixed with /api
 // So health.routes.js '/' becomes '/api/health'
 app.use('/api', routes);
@@ -45,6 +56,11 @@ app.use(errorHandler);
 // gives us a clean place to handle initialization errors.
 const startServer = async () => {
   await initializeStorage();
+
+  // Start the background worker that processes queued PDF jobs.
+  // The worker runs in the same process, polling the in-memory queue.
+  // In production with BullMQ + Redis, you'd run the worker as a separate process.
+  startWorker();
 
   app.listen(serverConfig.port, () => {
     logger.info(`Server running on http://localhost:${serverConfig.port}`, {
