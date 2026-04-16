@@ -16,18 +16,21 @@ const COMPRESSION_PRESETS = {
   mild: {
     label: 'mild',
     ghostscriptSetting: '/printer',
+    imageDPI: 300,
   },
   best: {
     label: 'best',
     ghostscriptSetting: '/ebook',
+    imageDPI: 150,
   },
   heavy: {
     label: 'heavy',
     ghostscriptSetting: '/screen',
+    imageDPI: 72,
   },
 };
 
-let ghostscriptAvailable;
+const toolAvailability = {};
 
 const getCompressionPreset = (level = DEFAULT_LEVEL) => {
   const normalizedLevel = String(level).toLowerCase();
@@ -45,19 +48,19 @@ const getCompressionPreset = (level = DEFAULT_LEVEL) => {
   };
 };
 
-const canUseGhostscript = async () => {
-  if (typeof ghostscriptAvailable === 'boolean') {
-    return ghostscriptAvailable;
+const isToolAvailable = async (binary) => {
+  if (typeof toolAvailability[binary] === 'boolean') {
+    return toolAvailability[binary];
   }
 
   try {
-    await execFileAsync('gs', ['--version']);
-    ghostscriptAvailable = true;
+    await execFileAsync(binary, ['--version']);
+    toolAvailability[binary] = true;
   } catch {
-    ghostscriptAvailable = false;
+    toolAvailability[binary] = false;
   }
 
-  return ghostscriptAvailable;
+  return toolAvailability[binary];
 };
 
 const createPdfLibCandidate = async (pdfBytes) => {
@@ -77,14 +80,14 @@ const createPdfLibCandidate = async (pdfBytes) => {
   };
 };
 
-const createGhostscriptCandidate = async (inputPath, ghostscriptSetting) => {
-  if (!(await canUseGhostscript())) {
+const createGhostscriptCandidate = async (inputPath, preset) => {
+  if (!(await isToolAvailable('gs'))) {
     return null;
   }
 
   const tempOutputPath = path.join(
     os.tmpdir(),
-    generateUniqueFilename('ghostscript-compressed.pdf')
+    generateUniqueFilename('gs-compressed.pdf')
   );
 
   try {
@@ -94,7 +97,17 @@ const createGhostscriptCandidate = async (inputPath, ghostscriptSetting) => {
       '-dNOPAUSE',
       '-dQUIET',
       '-dBATCH',
-      `-dPDFSETTINGS=${ghostscriptSetting}`,
+      `-dPDFSETTINGS=${preset.ghostscriptSetting}`,
+      '-dDetectDuplicateImages=true',
+      '-dCompressFonts=true',
+      '-dSubsetFonts=true',
+      '-dEmbedAllFonts=true',
+      `-dColorImageResolution=${preset.imageDPI}`,
+      '-dColorImageDownsampleType=/Bicubic',
+      `-dGrayImageResolution=${preset.imageDPI}`,
+      '-dGrayImageDownsampleType=/Bicubic',
+      `-dMonoImageResolution=${preset.imageDPI}`,
+      '-dMonoImageDownsampleType=/Bicubic',
       `-sOutputFile=${tempOutputPath}`,
       inputPath,
     ]);
@@ -104,9 +117,8 @@ const createGhostscriptCandidate = async (inputPath, ghostscriptSetting) => {
       engine: 'ghostscript',
     };
   } catch (err) {
-    logger.warn('Ghostscript compression failed, using pdf-lib fallback', {
+    logger.warn('Ghostscript compression failed', {
       inputPath,
-      ghostscriptSetting,
       error: err.message,
     });
     return null;
@@ -115,22 +127,115 @@ const createGhostscriptCandidate = async (inputPath, ghostscriptSetting) => {
   }
 };
 
+const createQpdfCandidate = async (inputPath) => {
+  if (!(await isToolAvailable('qpdf'))) {
+    return null;
+  }
+
+  const tempOutputPath = path.join(
+    os.tmpdir(),
+    generateUniqueFilename('qpdf-compressed.pdf')
+  );
+
+  try {
+    await execFileAsync('qpdf', [
+      '--recompress-flate',
+      '--compression-level=9',
+      '--object-streams=generate',
+      inputPath,
+      tempOutputPath,
+    ]);
+
+    return {
+      bytes: await fs.readFile(tempOutputPath),
+      engine: 'qpdf',
+    };
+  } catch (err) {
+    logger.warn('qpdf compression failed', {
+      inputPath,
+      error: err.message,
+    });
+    return null;
+  } finally {
+    await fs.rm(tempOutputPath, { force: true }).catch(() => {});
+  }
+};
+
+const createMultiPassCandidate = async (inputPath, preset) => {
+  const gsAvailable = await isToolAvailable('gs');
+  const qpdfAvailable = await isToolAvailable('qpdf');
+  if (!gsAvailable || !qpdfAvailable) {
+    return null;
+  }
+
+  const gsTemp = path.join(os.tmpdir(), generateUniqueFilename('mp-gs.pdf'));
+  const qpdfTemp = path.join(os.tmpdir(), generateUniqueFilename('mp-qpdf.pdf'));
+
+  try {
+    await execFileAsync('gs', [
+      '-sDEVICE=pdfwrite',
+      '-dCompatibilityLevel=1.4',
+      '-dNOPAUSE',
+      '-dQUIET',
+      '-dBATCH',
+      `-dPDFSETTINGS=${preset.ghostscriptSetting}`,
+      '-dDetectDuplicateImages=true',
+      '-dCompressFonts=true',
+      '-dSubsetFonts=true',
+      '-dEmbedAllFonts=true',
+      `-dColorImageResolution=${preset.imageDPI}`,
+      '-dColorImageDownsampleType=/Bicubic',
+      `-dGrayImageResolution=${preset.imageDPI}`,
+      '-dGrayImageDownsampleType=/Bicubic',
+      `-dMonoImageResolution=${preset.imageDPI}`,
+      '-dMonoImageDownsampleType=/Bicubic',
+      `-sOutputFile=${gsTemp}`,
+      inputPath,
+    ]);
+
+    await execFileAsync('qpdf', [
+      '--recompress-flate',
+      '--compression-level=9',
+      '--object-streams=generate',
+      gsTemp,
+      qpdfTemp,
+    ]);
+
+    return {
+      bytes: await fs.readFile(qpdfTemp),
+      engine: 'ghostscript+qpdf',
+    };
+  } catch (err) {
+    logger.warn('Multi-pass compression failed', {
+      inputPath,
+      error: err.message,
+    });
+    return null;
+  } finally {
+    await Promise.all([
+      fs.rm(gsTemp, { force: true }).catch(() => {}),
+      fs.rm(qpdfTemp, { force: true }).catch(() => {}),
+    ]);
+  }
+};
+
 export const compressPDF = async (inputPath, outputPath, options = {}) => {
   const preset = getCompressionPreset(options.level);
   const pdfBytes = await fs.readFile(inputPath);
   const originalSizeBytes = pdfBytes.length;
 
-  const pdfLibCandidate = await createPdfLibCandidate(pdfBytes);
+  const [pdfLibCandidate, gsCandidate, qpdfCandidate, multiPassCandidate] =
+    await Promise.all([
+      createPdfLibCandidate(pdfBytes),
+      createGhostscriptCandidate(inputPath, preset),
+      createQpdfCandidate(inputPath),
+      createMultiPassCandidate(inputPath, preset),
+    ]);
+
   const candidates = [pdfLibCandidate];
-
-  const ghostscriptCandidate = await createGhostscriptCandidate(
-    inputPath,
-    preset.ghostscriptSetting
-  );
-
-  if (ghostscriptCandidate) {
-    candidates.push(ghostscriptCandidate);
-  }
+  if (gsCandidate) candidates.push(gsCandidate);
+  if (qpdfCandidate) candidates.push(qpdfCandidate);
+  if (multiPassCandidate) candidates.push(multiPassCandidate);
 
   const bestCandidate = candidates.reduce((smallest, candidate) => {
     return candidate.bytes.length < smallest.bytes.length ? candidate : smallest;
@@ -147,6 +252,15 @@ export const compressPDF = async (inputPath, outputPath, options = {}) => {
   const savedPercent = originalSizeBytes > 0
     ? ((savedBytesValue / originalSizeBytes) * 100).toFixed(1)
     : '0.0';
+
+  logger.info('Compression complete', {
+    engine: compressedSizeBytes < originalSizeBytes ? bestCandidate.engine : 'original',
+    level: preset.label,
+    originalSize: formatFileSize(originalSizeBytes),
+    compressedSize: formatFileSize(compressedSizeBytes),
+    savedPercent: `${savedPercent}%`,
+    candidateCount: candidates.length,
+  });
 
   return {
     outputPath,
