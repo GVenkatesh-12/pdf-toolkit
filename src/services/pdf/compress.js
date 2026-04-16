@@ -103,143 +103,40 @@ const createPdfLibCandidate = async (pdfBytes) => {
   };
 };
 
-const createGhostscriptCandidate = async (inputPath, preset) => {
-  if (!(await isToolAvailable('gs'))) {
-    return null;
-  }
+const GS_TIMEOUT = 120_000;
+const QPDF_TIMEOUT = 60_000;
 
-  const tempOutputPath = path.join(
-    os.tmpdir(),
-    generateUniqueFilename('gs-compressed.pdf')
-  );
-
-  try {
-    await execFileAsync('gs', [
-      '-sDEVICE=pdfwrite',
-      '-dCompatibilityLevel=1.4',
-      '-dNOPAUSE',
-      '-dQUIET',
-      '-dBATCH',
-      `-dPDFSETTINGS=${preset.ghostscriptSetting}`,
-      '-dDetectDuplicateImages=true',
-      '-dCompressFonts=true',
-      '-dSubsetFonts=true',
-      '-dEmbedAllFonts=true',
-      `-dColorImageResolution=${preset.imageDPI}`,
-      '-dColorImageDownsampleType=/Bicubic',
-      `-dGrayImageResolution=${preset.imageDPI}`,
-      '-dGrayImageDownsampleType=/Bicubic',
-      `-dMonoImageResolution=${preset.imageDPI}`,
-      '-dMonoImageDownsampleType=/Bicubic',
-      `-sOutputFile=${tempOutputPath}`,
-      inputPath,
-    ]);
-
-    return {
-      bytes: await fs.readFile(tempOutputPath),
-      engine: 'ghostscript',
-    };
-  } catch (err) {
-    logger.warn('Ghostscript compression failed', {
-      inputPath,
-      error: err.message,
-    });
-    return null;
-  } finally {
-    await fs.rm(tempOutputPath, { force: true }).catch(() => {});
-  }
+const runGhostscript = async (inputPath, outputPath, preset) => {
+  await execFileAsync('gs', [
+    '-sDEVICE=pdfwrite',
+    '-dCompatibilityLevel=1.4',
+    '-dNOPAUSE',
+    '-dQUIET',
+    '-dBATCH',
+    `-dPDFSETTINGS=${preset.ghostscriptSetting}`,
+    '-dDetectDuplicateImages=true',
+    '-dCompressFonts=true',
+    '-dSubsetFonts=true',
+    '-dEmbedAllFonts=true',
+    `-dColorImageResolution=${preset.imageDPI}`,
+    '-dColorImageDownsampleType=/Bicubic',
+    `-dGrayImageResolution=${preset.imageDPI}`,
+    '-dGrayImageDownsampleType=/Bicubic',
+    `-dMonoImageResolution=${preset.imageDPI}`,
+    '-dMonoImageDownsampleType=/Bicubic',
+    `-sOutputFile=${outputPath}`,
+    inputPath,
+  ], { timeout: GS_TIMEOUT });
 };
 
-const createQpdfCandidate = async (inputPath) => {
-  if (!(await isToolAvailable('qpdf'))) {
-    return null;
-  }
-
-  const tempOutputPath = path.join(
-    os.tmpdir(),
-    generateUniqueFilename('qpdf-compressed.pdf')
-  );
-
-  try {
-    await execFileAsync('qpdf', [
-      '--recompress-flate',
-      '--compression-level=9',
-      '--object-streams=generate',
-      inputPath,
-      tempOutputPath,
-    ]);
-
-    return {
-      bytes: await fs.readFile(tempOutputPath),
-      engine: 'qpdf',
-    };
-  } catch (err) {
-    logger.warn('qpdf compression failed', {
-      inputPath,
-      error: err.message,
-    });
-    return null;
-  } finally {
-    await fs.rm(tempOutputPath, { force: true }).catch(() => {});
-  }
-};
-
-const createMultiPassCandidate = async (inputPath, preset) => {
-  const gsAvailable = await isToolAvailable('gs');
-  const qpdfAvailable = await isToolAvailable('qpdf');
-  if (!gsAvailable || !qpdfAvailable) {
-    return null;
-  }
-
-  const gsTemp = path.join(os.tmpdir(), generateUniqueFilename('mp-gs.pdf'));
-  const qpdfTemp = path.join(os.tmpdir(), generateUniqueFilename('mp-qpdf.pdf'));
-
-  try {
-    await execFileAsync('gs', [
-      '-sDEVICE=pdfwrite',
-      '-dCompatibilityLevel=1.4',
-      '-dNOPAUSE',
-      '-dQUIET',
-      '-dBATCH',
-      `-dPDFSETTINGS=${preset.ghostscriptSetting}`,
-      '-dDetectDuplicateImages=true',
-      '-dCompressFonts=true',
-      '-dSubsetFonts=true',
-      '-dEmbedAllFonts=true',
-      `-dColorImageResolution=${preset.imageDPI}`,
-      '-dColorImageDownsampleType=/Bicubic',
-      `-dGrayImageResolution=${preset.imageDPI}`,
-      '-dGrayImageDownsampleType=/Bicubic',
-      `-dMonoImageResolution=${preset.imageDPI}`,
-      '-dMonoImageDownsampleType=/Bicubic',
-      `-sOutputFile=${gsTemp}`,
-      inputPath,
-    ]);
-
-    await execFileAsync('qpdf', [
-      '--recompress-flate',
-      '--compression-level=9',
-      '--object-streams=generate',
-      gsTemp,
-      qpdfTemp,
-    ]);
-
-    return {
-      bytes: await fs.readFile(qpdfTemp),
-      engine: 'ghostscript+qpdf',
-    };
-  } catch (err) {
-    logger.warn('Multi-pass compression failed', {
-      inputPath,
-      error: err.message,
-    });
-    return null;
-  } finally {
-    await Promise.all([
-      fs.rm(gsTemp, { force: true }).catch(() => {}),
-      fs.rm(qpdfTemp, { force: true }).catch(() => {}),
-    ]);
-  }
+const runQpdf = async (inputPath, outputPath) => {
+  await execFileAsync('qpdf', [
+    '--recompress-flate',
+    '--compression-level=9',
+    '--object-streams=generate',
+    inputPath,
+    outputPath,
+  ], { timeout: QPDF_TIMEOUT });
 };
 
 export const compressPDF = async (inputPath, outputPath, options = {}) => {
@@ -247,18 +144,57 @@ export const compressPDF = async (inputPath, outputPath, options = {}) => {
   const pdfBytes = await fs.readFile(inputPath);
   const originalSizeBytes = pdfBytes.length;
 
-  const [pdfLibCandidate, gsCandidate, qpdfCandidate, multiPassCandidate] =
-    await Promise.all([
-      createPdfLibCandidate(pdfBytes),
-      createGhostscriptCandidate(inputPath, preset),
-      createQpdfCandidate(inputPath),
-      createMultiPassCandidate(inputPath, preset),
-    ]);
+  const gsAvailable = await isToolAvailable('gs');
+  const qpdfAvailable = await isToolAvailable('qpdf');
 
+  const pdfLibCandidate = await createPdfLibCandidate(pdfBytes);
   const candidates = [pdfLibCandidate];
-  if (gsCandidate) candidates.push(gsCandidate);
-  if (qpdfCandidate) candidates.push(qpdfCandidate);
-  if (multiPassCandidate) candidates.push(multiPassCandidate);
+
+  const tempFiles = [];
+  const trackTemp = (filePath) => { tempFiles.push(filePath); return filePath; };
+
+  try {
+    // Step 1: Run GS once and qpdf-on-original in parallel (the two heaviest tasks)
+    const gsOutPath = trackTemp(path.join(os.tmpdir(), generateUniqueFilename('gs.pdf')));
+    const qpdfOutPath = trackTemp(path.join(os.tmpdir(), generateUniqueFilename('qpdf.pdf')));
+
+    const parallelTasks = [];
+
+    if (gsAvailable) {
+      parallelTasks.push(
+        runGhostscript(inputPath, gsOutPath, preset)
+          .then(() => fs.readFile(gsOutPath))
+          .then((bytes) => { candidates.push({ bytes, engine: 'ghostscript' }); })
+          .catch((err) => logger.warn('Ghostscript compression failed', { error: err.message }))
+      );
+    }
+
+    if (qpdfAvailable) {
+      parallelTasks.push(
+        runQpdf(inputPath, qpdfOutPath)
+          .then((bytes) => fs.readFile(qpdfOutPath))
+          .then((bytes) => { candidates.push({ bytes, engine: 'qpdf' }); })
+          .catch((err) => logger.warn('qpdf compression failed', { error: err.message }))
+      );
+    }
+
+    await Promise.all(parallelTasks);
+
+    // Step 2: If GS succeeded and qpdf is available, run qpdf on the GS output (multi-pass)
+    const gsSucceeded = candidates.some((c) => c.engine === 'ghostscript');
+    if (gsSucceeded && qpdfAvailable) {
+      const multiPassOutPath = trackTemp(path.join(os.tmpdir(), generateUniqueFilename('mp.pdf')));
+      try {
+        await runQpdf(gsOutPath, multiPassOutPath);
+        const bytes = await fs.readFile(multiPassOutPath);
+        candidates.push({ bytes, engine: 'ghostscript+qpdf' });
+      } catch (err) {
+        logger.warn('Multi-pass compression failed', { error: err.message });
+      }
+    }
+  } finally {
+    await Promise.all(tempFiles.map((f) => fs.rm(f, { force: true }).catch(() => {})));
+  }
 
   const bestCandidate = candidates.reduce((smallest, candidate) => {
     return candidate.bytes.length < smallest.bytes.length ? candidate : smallest;
