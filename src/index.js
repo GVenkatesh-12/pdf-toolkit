@@ -1,16 +1,22 @@
-// Load environment variables FIRST, before anything else imports config
+// Entry point — assembles and starts everything.
+// Now includes security middleware, session isolation, and graceful shutdown.
+
 import 'dotenv/config';
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
+import helmet from 'helmet';
+import cors from 'cors';
 import { serverConfig } from './config/index.js';
 import logger from './utils/logger.js';
 import requestLogger from './middleware/requestLogger.js';
 import errorHandler from './middleware/errorHandler.js';
+import { apiLimiter } from './middleware/rateLimiter.js';
+import { sessionMiddleware } from './middleware/session.js';
 import routes from './routes/index.js';
-import { initializeStorage } from './services/storage.service.js';
-import { startWorker } from './workers/pdf.worker.js';
+import { initializeStorage, startFileCleanup, stopFileCleanup } from './services/storage.service.js';
+import { startWorker, stopWorker } from './workers/pdf.worker.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,26 +25,49 @@ const CLIENT_DIR = path.join(__dirname, '..', 'client');
 // ── Create the app ─────────────────────────────────────────────────────
 const app = express();
 
+// ── Security middleware (runs FIRST) ───────────────────────────────────
+// Helmet sets security headers: CSP, HSTS, X-Frame-Options, etc.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdnjs.cloudflare.com"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'"],
+      workerSrc: ["'self'", "blob:", "https://cdnjs.cloudflare.com"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+}));
+
+// CORS — configurable allowed origins
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || '*',
+  methods: ['GET', 'POST', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'X-Session-ID'],
+}));
+
+// Trust proxy (for rate limiter to work behind reverse proxies like nginx)
+app.set('trust proxy', 1);
+
 // ── Built-in middleware ────────────────────────────────────────────────
-// express.json() parses incoming JSON request bodies.
-// Without this, req.body would be undefined for POST requests.
 app.use(express.json());
 
 // ── Custom middleware (order matters!) ─────────────────────────────────
-// requestLogger runs FIRST on every request
 app.use(requestLogger);
 
 // ── Static files (frontend) ──────────────────────────────────────────
-// Serve the client/ folder as static files. This is how the frontend is delivered.
 app.use(express.static(CLIENT_DIR));
 
+// ── Session + Rate Limiter for all API routes ─────────────────────────
+app.use('/api', sessionMiddleware, apiLimiter);
+
 // ── API Routes ──────────────────────────────────────────────────────
-// All routes are prefixed with /api
-// So health.routes.js '/' becomes '/api/health'
 app.use('/api', routes);
 
-// ── 404 handler (after all routes) ─────────────────────────────────────
-// If no route matched, this runs. It must come AFTER all route registrations.
+// ── 404 handler ─────────────────────────────────────────────────────
 app.use((req, res, _next) => {
   res.status(404).json({
     status: 'error',
@@ -47,27 +76,48 @@ app.use((req, res, _next) => {
 });
 
 // ── Error handler (must be LAST) ───────────────────────────────────────
-// Express requires error handlers to be registered after everything else.
 app.use(errorHandler);
 
 // ── Start the server ───────────────────────────────────────────────────
-// We use an async IIFE (Immediately Invoked Function Expression) because
-// top-level await works in ES modules, but wrapping startup in a function
-// gives us a clean place to handle initialization errors.
+let server;
+
 const startServer = async () => {
   await initializeStorage();
-
-  // Start the background worker that processes queued PDF jobs.
-  // The worker runs in the same process, polling the in-memory queue.
-  // In production with BullMQ + Redis, you'd run the worker as a separate process.
   startWorker();
+  startFileCleanup();
 
-  app.listen(serverConfig.port, () => {
+  server = app.listen(serverConfig.port, () => {
     logger.info(`Server running on http://localhost:${serverConfig.port}`, {
       env: serverConfig.nodeEnv,
     });
   });
 };
+
+// ── Graceful shutdown ──────────────────────────────────────────────────
+const gracefulShutdown = (signal) => {
+  logger.info(`${signal} received. Shutting down gracefully...`);
+  
+  stopWorker();
+  stopFileCleanup();
+
+  if (server) {
+    server.close(() => {
+      logger.info('Server closed. Bye!');
+      process.exit(0);
+    });
+
+    // Force exit after 10s if connections aren't closing
+    setTimeout(() => {
+      logger.warn('Forcing shutdown after timeout');
+      process.exit(1);
+    }, 10_000);
+  } else {
+    process.exit(0);
+  }
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 startServer().catch((err) => {
   logger.error('Failed to start server', { error: err.message });

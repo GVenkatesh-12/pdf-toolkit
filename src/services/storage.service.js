@@ -1,16 +1,5 @@
-// The Storage Service.
-//
-// KEY CONCEPT: This service handles all file system operations.
-// No other part of the app should directly use fs to read/write files.
-//
-// WHY centralize file operations?
-//   1. If you later switch from local disk to cloud storage (S3, GCS),
-//      you change THIS ONE FILE and nothing else.
-//   2. All file error handling is in one place.
-//   3. File cleanup logic lives here, not scattered across controllers.
-//
-// FUNCTIONAL APPROACH: Each function takes explicit inputs and returns
-// explicit outputs. No hidden state, no global variables.
+// The Storage Service — handles all file system operations.
+// Now session-scoped: each user gets their own upload/processed directories.
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -19,9 +8,7 @@ import { NotFoundError } from '../utils/errors.js';
 import { formatFileSize } from '../utils/fileHelpers.js';
 import logger from '../utils/logger.js';
 
-// Ensure upload and processed directories exist.
-// Called once at startup. Using "recursive: true" means it won't error
-// if the directory already exists (idempotent -- safe to call multiple times).
+// Ensure root upload and processed directories exist at startup.
 export const initializeStorage = async () => {
   await fs.mkdir(storageConfig.uploadDir, { recursive: true });
   await fs.mkdir(storageConfig.processedDir, { recursive: true });
@@ -31,11 +18,9 @@ export const initializeStorage = async () => {
   });
 };
 
-// Get metadata about an uploaded file.
-// Returns a plain object (data) -- not an HTTP response, not a class instance.
-// This is the functional approach: functions return DATA, callers decide what to do with it.
-export const getFileInfo = async (filename) => {
-  const filePath = path.join(storageConfig.uploadDir, filename);
+// Get metadata about a file in a specific directory.
+export const getFileInfo = async (directory, filename) => {
+  const filePath = path.join(directory, filename);
 
   try {
     const stats = await fs.stat(filePath);
@@ -54,12 +39,14 @@ export const getFileInfo = async (filename) => {
   }
 };
 
-// List all uploaded files with their metadata.
-export const listUploadedFiles = async () => {
+// List all PDF files in a given directory.
+export const listFiles = async (directory) => {
   try {
-    const filenames = await fs.readdir(storageConfig.uploadDir);
+    const filenames = await fs.readdir(directory);
     const pdfFiles = filenames.filter((f) => f.endsWith('.pdf'));
-    const fileInfos = await Promise.all(pdfFiles.map(getFileInfo));
+    const fileInfos = await Promise.all(
+      pdfFiles.map((f) => getFileInfo(directory, f))
+    );
     return fileInfos;
   } catch (err) {
     if (err.code === 'ENOENT') return [];
@@ -67,9 +54,9 @@ export const listUploadedFiles = async () => {
   }
 };
 
-// Delete an uploaded file.
-export const deleteFile = async (filename) => {
-  const filePath = path.join(storageConfig.uploadDir, filename);
+// Delete a file.
+export const deleteFile = async (directory, filename) => {
+  const filePath = path.join(directory, filename);
 
   try {
     await fs.unlink(filePath);
@@ -83,7 +70,87 @@ export const deleteFile = async (filename) => {
   }
 };
 
-// Get the full path for an uploaded file (used for downloads).
+// Get the full path for a file in a directory.
 export const getFilePath = (directory, filename) => {
   return path.join(directory, filename);
+};
+
+// ── File Cleanup ─────────────────────────────────────────────
+// Recursively walk session directories and delete files older than fileTTL.
+// Also removes empty session directories.
+
+export const cleanupExpiredFiles = async () => {
+  const ttl = storageConfig.fileTTL;
+  const now = Date.now();
+  let cleaned = 0;
+
+  for (const rootDir of [storageConfig.uploadDir, storageConfig.processedDir]) {
+    try {
+      const entries = await fs.readdir(rootDir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const entryPath = path.join(rootDir, entry.name);
+
+        if (entry.isDirectory()) {
+          // This is a session directory — clean old files inside it
+          try {
+            const files = await fs.readdir(entryPath);
+
+            for (const file of files) {
+              const filePath = path.join(entryPath, file);
+              try {
+                const stats = await fs.stat(filePath);
+                if (now - stats.mtimeMs > ttl) {
+                  await fs.unlink(filePath);
+                  cleaned++;
+                }
+              } catch {
+                // File may have been deleted already
+              }
+            }
+
+            // Remove the session directory if it's now empty
+            const remaining = await fs.readdir(entryPath);
+            if (remaining.length === 0) {
+              await fs.rmdir(entryPath);
+            }
+          } catch {
+            // Session directory may have been removed
+          }
+        } else if (entry.isFile()) {
+          // Legacy file in root uploads/processed (not in a session dir)
+          try {
+            const stats = await fs.stat(entryPath);
+            if (now - stats.mtimeMs > ttl) {
+              await fs.unlink(entryPath);
+              cleaned++;
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+    } catch {
+      // Root dir may not exist yet
+    }
+  }
+
+  if (cleaned > 0) {
+    logger.info(`File cleanup: removed ${cleaned} expired file(s)`);
+  }
+};
+
+let cleanupTimer = null;
+
+export const startFileCleanup = () => {
+  if (cleanupTimer) return;
+  cleanupTimer = setInterval(cleanupExpiredFiles, storageConfig.cleanupInterval);
+  logger.info(`File cleanup scheduled every ${storageConfig.cleanupInterval / 1000}s (TTL: ${storageConfig.fileTTL / 1000}s)`);
+};
+
+export const stopFileCleanup = () => {
+  if (cleanupTimer) {
+    clearInterval(cleanupTimer);
+    cleanupTimer = null;
+  }
 };
