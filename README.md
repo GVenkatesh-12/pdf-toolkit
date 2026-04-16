@@ -1,5 +1,7 @@
 # PDF Toolkit Backend
 
+> **Live Demo:** [https://pdf-toolkit.duckdns.org/](https://pdf-toolkit.duckdns.org/)
+
 A modular, production-architecture Node.js backend for PDF processing -- inspired by [iLovePDF](https://www.ilovepdf.com/). Built as a learning project to understand modular design, functional programming, job queues, and scalable backend architecture.
 
 ---
