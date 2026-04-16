@@ -15,6 +15,7 @@ import { sessionMiddleware } from './middleware/session.js';
 import routes from './routes/index.js';
 import { initializeStorage, startFileCleanup, stopFileCleanup } from './services/storage.service.js';
 import { startWorker, stopWorker } from './workers/pdf.worker.js';
+import { checkCompressionTools } from './services/pdf/compress.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -84,6 +85,7 @@ let server;
 
 const startServer = async () => {
   await initializeStorage();
+  await checkCompressionTools();
   startWorker();
   startFileCleanup();
 

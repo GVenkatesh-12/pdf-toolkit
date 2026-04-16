@@ -54,13 +54,36 @@ const isToolAvailable = async (binary) => {
   }
 
   try {
-    await execFileAsync(binary, ['--version']);
+    const { stdout } = await execFileAsync(binary, ['--version']);
     toolAvailability[binary] = true;
-  } catch {
+    logger.info(`Compression tool found: ${binary}`, { version: stdout.trim().split('\n')[0] });
+  } catch (err) {
     toolAvailability[binary] = false;
+    logger.warn(`Compression tool NOT found: ${binary} — install it for better compression`, {
+      error: err.code === 'ENOENT' ? 'binary not installed' : err.message,
+    });
   }
 
   return toolAvailability[binary];
+};
+
+export const checkCompressionTools = async () => {
+  await Promise.all([isToolAvailable('gs'), isToolAvailable('qpdf')]);
+  const available = Object.entries(toolAvailability)
+    .filter(([, v]) => v)
+    .map(([k]) => k);
+  const missing = Object.entries(toolAvailability)
+    .filter(([, v]) => !v)
+    .map(([k]) => k);
+
+  if (missing.length > 0) {
+    logger.warn(
+      `Compression running in degraded mode. Install missing tools: ${missing.join(', ')}. ` +
+      'On Ubuntu: sudo apt install ghostscript qpdf -y'
+    );
+  }
+
+  return { available, missing };
 };
 
 const createPdfLibCandidate = async (pdfBytes) => {
