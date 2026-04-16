@@ -1,6 +1,12 @@
 node_modules/
 uploads/
 processed/
+
+# Environment files (never commit secrets)
 .env
 .env.local
+.env.production
+
 *.pdf
+*.log
+npm-debug.log*

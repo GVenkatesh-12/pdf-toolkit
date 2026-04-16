@@ -704,6 +704,33 @@ function compactPageList(pages) {
   return ranges.join(', ');
 }
 
+// ── Remove-pages: sync thumbnails from text input ──────────────
+function syncSelectedPagesFromInput(value) {
+  const pages = new Set();
+  const chunks = value.split(',').map(s => s.trim()).filter(Boolean);
+
+  for (const chunk of chunks) {
+    if (chunk.includes('-')) {
+      const [rawStart, rawEnd] = chunk.split('-').map(s => parseInt(s.trim(), 10));
+      if (Number.isInteger(rawStart) && Number.isInteger(rawEnd) && rawStart <= rawEnd) {
+        for (let p = rawStart; p <= rawEnd; p++) {
+          if (p >= 1 && p <= state.previewPages) pages.add(p);
+        }
+      }
+    } else {
+      const p = parseInt(chunk, 10);
+      if (Number.isInteger(p) && p >= 1 && p <= state.previewPages) pages.add(p);
+    }
+  }
+
+  if (pages.size >= state.previewPages) {
+    showToast('You must keep at least one page.', 'error');
+    pages.delete([...pages].pop());
+  }
+
+  state.selectedPages = pages;
+}
+
 // ── Split: click to set range ──────────────────────────────────
 let splitClickState = 'start'; // alternates between 'start' and 'end'
 

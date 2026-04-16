@@ -1,5 +1,5 @@
 node_modules
-npm-debug.log
+npm-debug.log*
 .git
 .gitignore
 uploads/
@@ -7,3 +7,5 @@ processed/
 *.md
 .env
 .env.local
+.env.production
+*.pdf
