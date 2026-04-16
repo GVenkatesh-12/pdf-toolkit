@@ -1,71 +1,184 @@
 // ═══════════════════════════════════════════════════════════════
-// PDF Toolkit -- Frontend Application
+// PDF Toolkit — Frontend Application (Modern UI)
 // ═══════════════════════════════════════════════════════════════
 
 const API = '/api';
-const PDFJS_WORKER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-const SPLIT_THUMB_LIMIT = 8;
 
-const pdfjs = window.pdfjsLib || null;
-if (pdfjs) {
-  pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_SRC;
+// ── Session Management ─────────────────────────────────────────
+// Each browser tab gets a unique session ID for file isolation.
+function getSessionId() {
+  let sid = sessionStorage.getItem('pdf-toolkit-session');
+  if (!sid) {
+    sid = crypto.randomUUID();
+    sessionStorage.setItem('pdf-toolkit-session', sid);
+  }
+  return sid;
 }
 
-// ── State ────────────────────────────────────────────────────
-const state = {
-  activePanel: 'home',
-  files: { merge: [], split: [], compress: [] },
-  jobs: [],
-  pollingIntervals: {},
-  splitPreview: {
-    pdfDoc: null,
-    pageCount: 0,
-    currentPage: 1,
-    isLoading: false,
-    error: '',
-    fileToken: 0,
-    renderToken: 0,
-  },
-};
+const SESSION_ID = getSessionId();
 
-// ── DOM References ───────────────────────────────────────────
+function apiHeaders() {
+  return { 'X-Session-ID': SESSION_ID };
+}
+
+// ── DOM Helpers ────────────────────────────────────────────────
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
-// ── Navigation ───────────────────────────────────────────────
+// ── State ──────────────────────────────────────────────────────
+const state = {
+  currentView: 'home',
+  currentTool: null,
+  files: [],
+  isProcessing: false,
+  // Preview state
+  previewPages: 0,          // total pages in the current PDF
+  selectedPages: new Set(), // pages marked for removal (1-based)
+  pdfDoc: null,             // pdf.js document instance
+};
 
-function switchPanel(panelId) {
-  state.activePanel = panelId;
+// Tools that benefit from page preview
+const PREVIEW_TOOLS = new Set(['split', 'remove-pages', 'rotate']);
 
-  $$('.panel').forEach((p) => p.classList.remove('active'));
-  $(`#panel-${panelId}`)?.classList.add('active');
+// ── Tool Definitions ───────────────────────────────────────────
+const TOOLS = {
+  merge: {
+    title: 'Merge PDF',
+    subtitle: 'Combine multiple PDFs into a single document',
+    iconClass: 'tool-icon--merge',
+    maxFiles: 10,
+    multi: true,
+    options: [],
+  },
+  split: {
+    title: 'Split PDF',
+    subtitle: 'Extract a range of pages from your PDF',
+    iconClass: 'tool-icon--split',
+    maxFiles: 1,
+    multi: false,
+    options: [
+      { key: 'start', label: 'Start Page', type: 'number', default: 1, min: 1 },
+      { key: 'end', label: 'End Page', type: 'number', default: 1, min: 1 },
+    ],
+  },
+  compress: {
+    title: 'Compress PDF',
+    subtitle: 'Reduce file size with adjustable quality',
+    iconClass: 'tool-icon--compress',
+    maxFiles: 1,
+    multi: false,
+    options: [
+      {
+        key: 'level', label: 'Level', type: 'select',
+        choices: [
+          { value: 'mild', label: 'Mild — keeps more quality' },
+          { value: 'best', label: 'Best — balanced (default)' },
+          { value: 'heavy', label: 'Heavy — maximum compression' },
+        ],
+        default: 'best',
+      },
+    ],
+  },
+  rotate: {
+    title: 'Rotate PDF',
+    subtitle: 'Rotate all pages by 90°, 180°, or 270°',
+    iconClass: 'tool-icon--rotate',
+    maxFiles: 1,
+    multi: false,
+    options: [
+      {
+        key: 'angle', label: 'Angle', type: 'select',
+        choices: [
+          { value: '90', label: '90° clockwise' },
+          { value: '180', label: '180°' },
+          { value: '270', label: '270° clockwise' },
+        ],
+        default: '90',
+      },
+    ],
+  },
+  'remove-pages': {
+    title: 'Remove Pages',
+    subtitle: 'Delete specific pages from your PDF',
+    iconClass: 'tool-icon--remove',
+    maxFiles: 1,
+    multi: false,
+    options: [
+      { key: 'pages', label: 'Pages', type: 'text', placeholder: 'e.g. 2, 4-6, 9', hint: 'Click thumbnails below to select pages, or type page numbers above' },
+    ],
+  },
+  watermark: {
+    title: 'Watermark',
+    subtitle: 'Add text watermarks to every page',
+    iconClass: 'tool-icon--watermark',
+    maxFiles: 1,
+    multi: false,
+    options: [
+      { key: 'text', label: 'Text', type: 'text', default: 'CONFIDENTIAL', placeholder: 'Watermark text' },
+      {
+        key: 'color', label: 'Color', type: 'select',
+        choices: [
+          { value: 'gray', label: 'Gray' },
+          { value: 'red', label: 'Red' },
+          { value: 'blue', label: 'Blue' },
+          { value: 'green', label: 'Green' },
+        ],
+        default: 'gray',
+      },
+      {
+        key: 'position', label: 'Position', type: 'select',
+        choices: [
+          { value: 'diagonal', label: 'Diagonal' },
+          { value: 'center', label: 'Center' },
+        ],
+        default: 'diagonal',
+      },
+      { key: 'opacity', label: 'Opacity', type: 'number', default: 0.15, min: 0.05, max: 1, step: 0.05 },
+    ],
+  },
+  'page-numbers': {
+    title: 'Page Numbers',
+    subtitle: 'Add page numbers to your PDF',
+    iconClass: 'tool-icon--pagenums',
+    maxFiles: 1,
+    multi: false,
+    options: [
+      {
+        key: 'position', label: 'Position', type: 'select',
+        choices: [
+          { value: 'bottom-center', label: 'Bottom Center' },
+          { value: 'bottom-right', label: 'Bottom Right' },
+          { value: 'bottom-left', label: 'Bottom Left' },
+          { value: 'top-center', label: 'Top Center' },
+          { value: 'top-right', label: 'Top Right' },
+        ],
+        default: 'bottom-center',
+      },
+      {
+        key: 'format', label: 'Format', type: 'select',
+        choices: [
+          { value: 'page-x-of-y', label: 'Page X of Y' },
+          { value: 'page-x', label: 'Page X' },
+          { value: 'number-only', label: 'Number only' },
+        ],
+        default: 'page-x-of-y',
+      },
+      { key: 'startNumber', label: 'Start At', type: 'number', default: 1, min: 1 },
+    ],
+  },
+  unlock: {
+    title: 'Unlock PDF',
+    subtitle: 'Remove password protection from a PDF',
+    iconClass: 'tool-icon--unlock',
+    maxFiles: 1,
+    multi: false,
+    options: [
+      { key: 'password', label: 'Password', type: 'password', placeholder: 'Enter the PDF password' },
+    ],
+  },
+};
 
-  $$('.tab').forEach((t) => t.classList.remove('active'));
-  $$(`.tab[data-panel="${panelId}"]`).forEach((t) => t.classList.add('active'));
-
-  $$('.sidebar-item').forEach((s) => s.classList.remove('active'));
-  $$(`.sidebar-item[data-panel="${panelId}"]`).forEach((s) => s.classList.add('active'));
-
-  const fileNames = {
-    home: 'welcome.md', merge: 'merge.sh',
-    split: 'split.sh', compress: 'compress.sh', jobs: 'jobs.log',
-  };
-  $('#statusFile').textContent = fileNames[panelId] || panelId;
-
-  if (panelId === 'split' && state.splitPreview.pdfDoc) {
-    renderSplitMainPreview();
-  }
-}
-
-$$('.tab').forEach((tab) => {
-  tab.addEventListener('click', () => switchPanel(tab.dataset.panel));
-});
-$$('.sidebar-item').forEach((item) => {
-  item.addEventListener('click', () => switchPanel(item.dataset.panel));
-});
-
-// ── File Helpers ─────────────────────────────────────────────
-
+// ── Utilities ──────────────────────────────────────────────────
 function formatSize(bytes) {
   if (bytes === 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -74,935 +187,747 @@ function formatSize(bytes) {
 }
 
 function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (char) => {
-    const entities = {
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;',
-    };
-    return entities[char];
+  const d = document.createElement('div');
+  d.textContent = String(value);
+  return d.innerHTML;
+}
+
+// ── Toast Notifications ────────────────────────────────────────
+function showToast(message, type = 'info', duration = 4000) {
+  const container = $('#toastContainer');
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+
+  const iconSvg = type === 'success'
+    ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>'
+    : type === 'error'
+    ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>'
+    : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
+
+  toast.innerHTML = `
+    <span class="toast-icon">${iconSvg}</span>
+    <span>${escapeHtml(message)}</span>
+    <button class="toast-close">✕</button>
+  `;
+
+  container.appendChild(toast);
+
+  const close = () => {
+    toast.classList.add('toast-out');
+    setTimeout(() => toast.remove(), 300);
+  };
+
+  toast.querySelector('.toast-close').addEventListener('click', close);
+  if (duration > 0) setTimeout(close, duration);
+}
+
+// ── Theme Toggle ───────────────────────────────────────────────
+function initTheme() {
+  const saved = localStorage.getItem('pdf-toolkit-theme');
+  const theme = saved || 'dark';
+  document.documentElement.setAttribute('data-theme', theme);
+}
+
+$('#themeToggle')?.addEventListener('click', () => {
+  const current = document.documentElement.getAttribute('data-theme');
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('pdf-toolkit-theme', next);
+});
+
+initTheme();
+
+// ── Navigation ─────────────────────────────────────────────────
+function showView(viewId) {
+  $$('.view').forEach((v) => v.classList.remove('active'));
+  const view = $(`#view-${viewId}`);
+  if (view) {
+    view.classList.remove('active');
+    // Force reflow for animation
+    void view.offsetWidth;
+    view.classList.add('active');
+  }
+  state.currentView = viewId;
+}
+
+function openTool(toolName) {
+  const tool = TOOLS[toolName];
+  if (!tool) return;
+
+  state.currentTool = toolName;
+  state.files = [];
+  state.isProcessing = false;
+
+  // Set header info
+  const opIcon = $('#opIcon');
+  opIcon.className = `op-icon ${tool.iconClass}`;
+  opIcon.innerHTML = document.querySelector(`.tool-card[data-tool="${toolName}"] .tool-icon`).innerHTML;
+
+  $('#opTitle').textContent = tool.title;
+  $('#opSubtitle').textContent = tool.subtitle;
+
+  // Configure file input
+  const fileInput = $('#fileInput');
+  fileInput.multiple = tool.multi;
+  $('#uploadSubtitle').textContent = tool.multi
+    ? `or click to browse — ${tool.maxFiles} files max, 50 MB each`
+    : 'or click to browse — 1 file, max 50 MB';
+
+  // Render options
+  renderOptions(tool.options);
+
+  // Reset state
+  renderFileList();
+  clearPreview();
+  updateExecButton();
+  hideResult();
+  hideProgress();
+
+  // Reset exec button state
+  const btn = $('#execBtn');
+  btn.classList.remove('loading');
+
+  showView('operation');
+}
+
+function goHome() {
+  state.currentTool = null;
+  state.files = [];
+  clearPreview();
+  showView('home');
+}
+
+// Tool card clicks
+$$('.tool-card').forEach((card) => {
+  card.addEventListener('click', () => openTool(card.dataset.tool));
+});
+
+// Back button
+$('#backBtn')?.addEventListener('click', goHome);
+$('#logoLink')?.addEventListener('click', (e) => { e.preventDefault(); goHome(); });
+
+// ── Options Rendering ──────────────────────────────────────────
+function renderOptions(options) {
+  const panel = $('#optionsPanel');
+  if (!options || options.length === 0) {
+    panel.innerHTML = '';
+    return;
+  }
+
+  panel.innerHTML = options.map((opt) => {
+    let inputHtml = '';
+
+    if (opt.type === 'select') {
+      const optionsHtml = opt.choices.map((c) =>
+        `<option value="${c.value}" ${c.value === opt.default ? 'selected' : ''}>${escapeHtml(c.label)}</option>`
+      ).join('');
+      inputHtml = `<select class="option-select" id="opt-${opt.key}">${optionsHtml}</select>`;
+    } else if (opt.type === 'number') {
+      inputHtml = `<input type="number" class="option-input" id="opt-${opt.key}"
+        value="${opt.default || ''}" min="${opt.min || ''}" max="${opt.max || ''}" step="${opt.step || 1}" />`;
+    } else if (opt.type === 'password') {
+      inputHtml = `<input type="password" class="option-input" id="opt-${opt.key}"
+        value="${opt.default || ''}" placeholder="${opt.placeholder || ''}" autocomplete="off" style="min-width:200px;" />`;
+    } else {
+      inputHtml = `<input type="text" class="option-input" id="opt-${opt.key}"
+        value="${opt.default || ''}" placeholder="${opt.placeholder || ''}" style="min-width:200px;" />`;
+    }
+
+    const hintHtml = opt.hint ? `<span class="option-hint">${escapeHtml(opt.hint)}</span>` : '';
+
+    return `<div class="option-group">
+      <span class="option-label">${escapeHtml(opt.label)}</span>
+      ${inputHtml}
+      ${hintHtml}
+    </div>`;
+  }).join('');
+}
+
+function getOptionValues() {
+  const tool = TOOLS[state.currentTool];
+  if (!tool) return {};
+
+  const values = {};
+  for (const opt of tool.options) {
+    const el = $(`#opt-${opt.key}`);
+    if (el) values[opt.key] = el.value;
+  }
+  return values;
+}
+
+// ── File Handling ──────────────────────────────────────────────
+function addFiles(newFiles) {
+  const tool = TOOLS[state.currentTool];
+  if (!tool) return;
+
+  const pdfs = Array.from(newFiles).filter(
+    (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+  );
+
+  if (pdfs.length === 0) {
+    showToast('Please select PDF files only.', 'error');
+    return;
+  }
+
+  const maxSize = 50 * 1024 * 1024;
+  for (const f of pdfs) {
+    if (f.size > maxSize) {
+      showToast(`File "${f.name}" exceeds the 50 MB limit.`, 'error');
+      return;
+    }
+  }
+
+  if (!tool.multi) {
+    state.files = [pdfs[0]];
+  } else {
+    for (const f of pdfs) {
+      if (state.files.length >= tool.maxFiles) break;
+      state.files.push(f);
+    }
+  }
+
+  renderFileList();
+  updateExecButton();
+  hideResult();
+
+  // Render preview for tools that need it
+  if (PREVIEW_TOOLS.has(state.currentTool) && state.files.length === 1) {
+    renderPreview(state.files[0]);
+  } else {
+    clearPreview();
+  }
+}
+
+function removeFile(index) {
+  state.files.splice(index, 1);
+  renderFileList();
+  updateExecButton();
+  if (state.files.length === 0) clearPreview();
+}
+
+function renderFileList() {
+  const container = $('#fileList');
+  if (!container) return;
+
+  if (state.files.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = state.files.map((file, i) => `
+    <div class="file-entry">
+      <div class="file-entry-info">
+        <div class="file-entry-icon">PDF</div>
+        <div class="file-entry-name-wrap">
+          <div class="file-entry-name">${escapeHtml(file.name)}</div>
+          <div class="file-entry-size">${formatSize(file.size)}</div>
+        </div>
+      </div>
+      <button class="file-entry-remove" data-idx="${i}" title="Remove file">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+  `).join('');
+
+  container.querySelectorAll('.file-entry-remove').forEach((btn) => {
+    btn.addEventListener('click', () => removeFile(parseInt(btn.dataset.idx, 10)));
   });
 }
 
-function renderCompressionSummary(result) {
-  if (!result?.originalSize || !result?.compressedSize) return '';
+function updateExecButton() {
+  const btn = $('#execBtn');
+  if (!btn) return;
 
-  return `
-    <div class="result-summary">
-      <div><span class="cmt">level:</span> <span class="val">${escapeHtml(result.compressionLevel || 'best')}</span></div>
-      <div><span class="cmt">size:</span> <span class="val">${escapeHtml(result.originalSize)}</span> <span class="cmt">&rarr;</span> <span class="val">${escapeHtml(result.compressedSize)}</span></div>
-      <div><span class="cmt">difference:</span> <span class="val">${escapeHtml(result.savedBytes || '0 B')}</span> <span class="cmt">saved</span> <span class="val">(${escapeHtml(result.savedPercent || '0.0%')})</span></div>
-    </div>`;
+  const tool = TOOLS[state.currentTool];
+  const minFiles = state.currentTool === 'merge' ? 2 : 1;
+
+  btn.disabled = state.isProcessing || state.files.length < minFiles;
 }
 
-// ── Drop Zones & File Inputs ─────────────────────────────────
+// ── Upload Zone ────────────────────────────────────────────────
+const uploadZone = $('#uploadZone');
+const fileInput = $('#fileInput');
 
-function setupDropZone(operation) {
-  const dropZone = $(`#${operation}DropZone`);
-  const fileInput = $(`#${operation}FileInput`);
-  if (!dropZone || !fileInput) return;
-
+if (uploadZone) {
   ['dragenter', 'dragover'].forEach((evt) => {
-    dropZone.addEventListener(evt, (e) => {
+    uploadZone.addEventListener(evt, (e) => {
       e.preventDefault();
-      dropZone.classList.add('drag-over');
+      uploadZone.classList.add('drag-over');
     });
   });
 
   ['dragleave', 'drop'].forEach((evt) => {
-    dropZone.addEventListener(evt, () => {
-      dropZone.classList.remove('drag-over');
+    uploadZone.addEventListener(evt, () => {
+      uploadZone.classList.remove('drag-over');
     });
   });
 
-  dropZone.addEventListener('drop', (e) => {
+  uploadZone.addEventListener('drop', (e) => {
     e.preventDefault();
-    const files = Array.from(e.dataTransfer.files).filter(
-      (f) => f.type === 'application/pdf' || f.name.endsWith('.pdf'),
-    );
-    addFiles(operation, files);
+    addFiles(e.dataTransfer.files);
   });
+}
 
+if (fileInput) {
   fileInput.addEventListener('change', () => {
-    addFiles(operation, Array.from(fileInput.files));
+    addFiles(fileInput.files);
     fileInput.value = '';
   });
 }
 
-function addFiles(operation, newFiles) {
-  const maxFiles = operation === 'merge' ? 10 : 1;
+// ── Progress ───────────────────────────────────────────────────
+function showProgress(label = 'Uploading...', percent = -1) {
+  const wrap = $('#progressWrap');
+  const lbl = $('#progressLabel');
+  const fill = $('#progressFill');
+  wrap.style.display = 'block';
+  lbl.textContent = label;
 
-  if (operation !== 'merge') {
-    state.files[operation] = [];
+  if (percent < 0) {
+    fill.style.width = '0%';
+    fill.classList.add('indeterminate');
+  } else {
+    fill.classList.remove('indeterminate');
+    fill.style.width = `${Math.min(100, percent)}%`;
+  }
+}
+
+function hideProgress() {
+  $('#progressWrap').style.display = 'none';
+  const fill = $('#progressFill');
+  fill.style.width = '0%';
+  fill.classList.remove('indeterminate');
+}
+
+// ── Result ─────────────────────────────────────────────────────
+function showResult(meta, downloadUrl, downloadName) {
+  const panel = $('#resultPanel');
+  const metaEl = $('#resultMeta');
+  const dlBtn = $('#downloadBtn');
+
+  metaEl.innerHTML = meta;
+  dlBtn.href = downloadUrl;
+  dlBtn.download = downloadName || '';
+  panel.style.display = 'block';
+}
+
+function hideResult() {
+  $('#resultPanel').style.display = 'none';
+}
+
+$('#processAnotherBtn')?.addEventListener('click', () => {
+  state.files = [];
+  renderFileList();
+  updateExecButton();
+  hideResult();
+  hideProgress();
+  clearPreview();
+});
+
+// ═══════════════════════════════════════════════════════════════
+// PDF Page Preview System
+// Uses pdf.js to render page thumbnails client-side.
+// - remove-pages: click thumbnails to toggle removal, auto-fills input
+// - split: highlights start–end range, syncs with input fields
+// - rotate: shows pages so the user knows what they're rotating
+// ═══════════════════════════════════════════════════════════════
+
+function clearPreview() {
+  const panel = $('#previewPanel');
+  const grid = $('#previewGrid');
+  panel.style.display = 'none';
+  grid.innerHTML = '';
+  state.previewPages = 0;
+  state.selectedPages = new Set();
+  if (state.pdfDoc) {
+    state.pdfDoc.destroy();
+    state.pdfDoc = null;
+  }
+}
+
+async function renderPreview(file) {
+  clearPreview();
+
+  const panel = $('#previewPanel');
+  const grid = $('#previewGrid');
+  const loading = $('#previewLoading');
+  const info = $('#previewInfo');
+  const hint = $('#previewHint');
+  const title = $('#previewTitle');
+
+  panel.style.display = 'block';
+  loading.style.display = 'flex';
+  grid.innerHTML = '';
+
+  // Set hint text based on current tool
+  if (state.currentTool === 'remove-pages') {
+    title.textContent = 'Select Pages to Remove';
+    hint.textContent = 'Click on pages you want to remove. Selected pages will be highlighted in red.';
+  } else if (state.currentTool === 'split') {
+    title.textContent = 'Page Preview';
+    hint.textContent = 'Set the start and end page above. Included pages will be highlighted in blue.';
+  } else {
+    title.textContent = 'Page Preview';
+    hint.textContent = '';
   }
 
-  for (const file of newFiles) {
-    if (state.files[operation].length >= maxFiles) break;
-    state.files[operation].push(file);
+  try {
+    // Configure pdf.js worker
+    if (typeof pdfjsLib !== 'undefined') {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    state.pdfDoc = pdf;
+    state.previewPages = pdf.numPages;
+
+    info.textContent = `${pdf.numPages} page${pdf.numPages > 1 ? 's' : ''}`;
+
+    // Update split end-page default to match total pages
+    if (state.currentTool === 'split') {
+      const endInput = $('#opt-end');
+      if (endInput && (!endInput.value || endInput.value === '1')) {
+        endInput.value = pdf.numPages;
+      }
+    }
+
+    loading.style.display = 'none';
+
+    // Render all pages as thumbnails
+    const thumbWidth = 180; // px for rendering quality
+
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 1 });
+      const scale = thumbWidth / viewport.width;
+      const scaledViewport = page.getViewport({ scale });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = scaledViewport.width;
+      canvas.height = scaledViewport.height;
+
+      const ctx = canvas.getContext('2d');
+      await page.render({ canvasContext: ctx, viewport: scaledViewport }).promise;
+
+      const thumb = document.createElement('div');
+      thumb.className = 'preview-thumb';
+      thumb.dataset.page = pageNum;
+      thumb.appendChild(canvas);
+
+      const label = document.createElement('div');
+      label.className = 'preview-thumb-label';
+      label.textContent = `Page ${pageNum}`;
+      thumb.appendChild(label);
+
+      // Click handler for remove-pages
+      if (state.currentTool === 'remove-pages') {
+        thumb.addEventListener('click', () => togglePageSelection(pageNum));
+      }
+      // Click handler for split — click to set range start or end
+      if (state.currentTool === 'split') {
+        thumb.addEventListener('click', () => handleSplitPageClick(pageNum));
+      }
+
+      grid.appendChild(thumb);
+    }
+
+    // Initial highlight pass
+    updatePreviewHighlights();
+
+    // Wire split inputs to update highlights in real time
+    if (state.currentTool === 'split') {
+      const startInput = $('#opt-start');
+      const endInput = $('#opt-end');
+      if (startInput) startInput.addEventListener('input', updatePreviewHighlights);
+      if (endInput) endInput.addEventListener('input', updatePreviewHighlights);
+    }
+
+    // Wire remove-pages text input to sync thumbnails
+    if (state.currentTool === 'remove-pages') {
+      const pagesInput = $('#opt-pages');
+      if (pagesInput) {
+        pagesInput.addEventListener('input', () => {
+          syncSelectedPagesFromInput(pagesInput.value);
+          updatePreviewHighlights();
+        });
+      }
+    }
+
+  } catch (err) {
+    loading.style.display = 'none';
+    grid.innerHTML = `<p style="color:var(--text-muted);font-size:13px;grid-column:1/-1;text-align:center;padding:24px;">Could not render preview: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+// ── Remove-pages: toggle page selection ─────────────────────────
+function togglePageSelection(pageNum) {
+  if (state.selectedPages.has(pageNum)) {
+    state.selectedPages.delete(pageNum);
+  } else {
+    // Don't allow selecting ALL pages
+    if (state.selectedPages.size >= state.previewPages - 1) {
+      showToast('You must keep at least one page.', 'error');
+      return;
+    }
+    state.selectedPages.add(pageNum);
   }
 
-  renderFileList(operation);
-  updateExecButton(operation);
+  // Update the pages text input
+  const pagesInput = $('#opt-pages');
+  if (pagesInput) {
+    const sorted = [...state.selectedPages].sort((a, b) => a - b);
+    pagesInput.value = compactPageList(sorted);
+  }
 
-  if (operation === 'split') {
-    if (state.files.split[0]) {
-      loadSplitPreview(state.files.split[0]);
+  updatePreviewHighlights();
+}
+
+// Convert [1,2,3,5,7,8,9] → "1-3, 5, 7-9"
+function compactPageList(pages) {
+  if (pages.length === 0) return '';
+  const ranges = [];
+  let start = pages[0];
+  let end = pages[0];
+
+  for (let i = 1; i < pages.length; i++) {
+    if (pages[i] === end + 1) {
+      end = pages[i];
     } else {
-      resetSplitPreview();
+      ranges.push(start === end ? `${start}` : `${start}-${end}`);
+      start = pages[i];
+      end = pages[i];
     }
   }
+  ranges.push(start === end ? `${start}` : `${start}-${end}`);
+  return ranges.join(', ');
 }
 
-function removeFile(operation, index) {
-  state.files[operation].splice(index, 1);
-  renderFileList(operation);
-  updateExecButton(operation);
+// ── Split: click to set range ──────────────────────────────────
+let splitClickState = 'start'; // alternates between 'start' and 'end'
 
-  if (operation === 'split' && state.files.split.length === 0) {
-    resetSplitPreview();
-  }
-}
-
-function renderFileList(operation) {
-  const container = $(`#${operation}FileList`);
-  if (!container) return;
-
-  container.innerHTML = state.files[operation]
-    .map(
-      (file, i) => `
-    <div class="file-entry">
-      <div class="file-entry-left">
-        <span class="fn">&#9656;</span>
-        <span class="file-entry-name">${escapeHtml(file.name)}</span>
-        <span class="file-entry-size">${formatSize(file.size)}</span>
-      </div>
-      <span class="file-entry-remove" data-op="${operation}" data-idx="${i}">&times;</span>
-    </div>`,
-    )
-    .join('');
-
-  container.querySelectorAll('.file-entry-remove').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      removeFile(btn.dataset.op, parseInt(btn.dataset.idx, 10));
-    });
-  });
-}
-
-function updateExecButton(operation) {
-  const btn = $(`#${operation}ExecBtn`);
-  if (!btn) return;
-  const minFiles = operation === 'merge' ? 2 : 1;
-
-  if (state.files[operation].length < minFiles) {
-    btn.disabled = true;
-    return;
-  }
-
-  if (operation === 'split') {
-    const splitRange = getSplitRangeState();
-    btn.disabled = state.splitPreview.isLoading || !splitRange.valid;
-    return;
-  }
-
-  btn.disabled = false;
-}
-
-['merge', 'split', 'compress'].forEach(setupDropZone);
-
-function setSplitPreviewEmpty(message) {
-  const empty = $('#splitPreviewEmpty');
-  const wrap = $('#splitPreviewCanvasWrap');
-  if (!empty || !wrap) return;
-
-  empty.textContent = message;
-  wrap.classList.remove('has-preview');
-}
-
-function showSplitPreviewCanvas() {
-  $('#splitPreviewCanvasWrap')?.classList.add('has-preview');
-}
-
-function resetSplitPreview(message = 'Load a PDF to preview pages.') {
-  state.splitPreview.fileToken += 1;
-  state.splitPreview.pdfDoc = null;
-  state.splitPreview.pageCount = 0;
-  state.splitPreview.currentPage = 1;
-  state.splitPreview.isLoading = false;
-  state.splitPreview.error = '';
-  state.splitPreview.renderToken += 1;
-
-  const canvas = $('#splitPreviewCanvas');
-  if (canvas) {
-    const context = canvas.getContext('2d');
-    context?.clearRect(0, 0, canvas.width, canvas.height);
-    canvas.width = 0;
-    canvas.height = 0;
-    canvas.style.width = '0';
-    canvas.style.height = '0';
-  }
-
-  $('#splitSummary').textContent = 'No PDF loaded.';
-  $('#splitSelectionMeta').textContent = 'waiting for file...';
-  $('#splitPreviewLabel').textContent = 'page -- / --';
-  $('#splitThumbGrid').innerHTML = '<div class="split-empty-card">Selected pages will appear here.</div>';
-  $('#splitRangeHint').textContent = 'Select a PDF to inspect its pages before splitting.';
-  $('#splitPrevPageBtn').disabled = true;
-  $('#splitNextPageBtn').disabled = true;
-  setSplitPreviewEmpty(message);
-}
-
-function getSplitRangeState() {
-  const hasFile = state.files.split.length > 0;
-  const start = Number.parseInt($('#splitStart')?.value || '', 10);
-  const end = Number.parseInt($('#splitEnd')?.value || '', 10);
-  const pageCount = state.splitPreview.pageCount;
-
-  if (!hasFile) {
-    return { valid: false, reason: 'Select a PDF to split.', pageCount };
-  }
-
-  if (!Number.isInteger(start) || !Number.isInteger(end)) {
-    return { valid: false, reason: 'Enter numeric start and end pages.', pageCount };
-  }
-
-  if (start < 1 || end < 1) {
-    return { valid: false, reason: 'Page numbers start at 1.', pageCount };
-  }
-
-  if (start > end) {
-    return { valid: false, reason: 'Start page must be less than or equal to end page.', pageCount };
-  }
-
-  if (pageCount && end > pageCount) {
-    return { valid: false, reason: `End page cannot exceed page ${pageCount}.`, pageCount };
-  }
-
-  return {
-    valid: true,
-    start,
-    end,
-    count: (end - start) + 1,
-    pageCount,
-  };
-}
-
-function syncSplitInputBounds() {
-  const pageCount = state.splitPreview.pageCount;
-  const startInput = $('#splitStart');
-  const endInput = $('#splitEnd');
+function handleSplitPageClick(pageNum) {
+  const startInput = $('#opt-start');
+  const endInput = $('#opt-end');
   if (!startInput || !endInput) return;
 
-  if (pageCount) {
-    startInput.max = String(pageCount);
-    endInput.max = String(pageCount);
+  if (splitClickState === 'start') {
+    startInput.value = pageNum;
+    // If end is less than new start, auto-adjust
+    if (parseInt(endInput.value, 10) < pageNum) {
+      endInput.value = pageNum;
+    }
+    splitClickState = 'end';
+    showToast(`Start page set to ${pageNum}. Click another page to set end.`, 'info', 2000);
   } else {
-    startInput.removeAttribute('max');
-    endInput.removeAttribute('max');
+    endInput.value = pageNum;
+    // If start is greater than new end, auto-adjust
+    if (parseInt(startInput.value, 10) > pageNum) {
+      startInput.value = pageNum;
+    }
+    splitClickState = 'start';
+    showToast(`Page range set: ${startInput.value}–${endInput.value}`, 'success', 2000);
   }
+
+  updatePreviewHighlights();
 }
 
-function updateSplitPreviewControls() {
-  const { pageCount, currentPage } = state.splitPreview;
-  const label = $('#splitPreviewLabel');
-  if (label) {
-    label.textContent = pageCount ? `page ${currentPage} / ${pageCount}` : 'page -- / --';
-  }
+// ── Update thumbnail highlights ────────────────────────────────
+function updatePreviewHighlights() {
+  const thumbs = $$('.preview-thumb');
+  if (thumbs.length === 0) return;
 
-  const prevBtn = $('#splitPrevPageBtn');
-  const nextBtn = $('#splitNextPageBtn');
-  if (prevBtn) prevBtn.disabled = !pageCount || currentPage <= 1;
-  if (nextBtn) nextBtn.disabled = !pageCount || currentPage >= pageCount;
-}
-
-async function renderPdfPageToCanvas(pdfDoc, pageNumber, canvas, targetWidth) {
-  const page = await pdfDoc.getPage(pageNumber);
-  const baseViewport = page.getViewport({ scale: 1 });
-  const scale = Math.max(targetWidth / baseViewport.width, 0.25);
-  const viewport = page.getViewport({ scale });
-  const outputScale = window.devicePixelRatio || 1;
-  const context = canvas.getContext('2d');
-
-  canvas.width = Math.floor(viewport.width * outputScale);
-  canvas.height = Math.floor(viewport.height * outputScale);
-  canvas.style.width = `${Math.floor(viewport.width)}px`;
-  canvas.style.height = `${Math.floor(viewport.height)}px`;
-
-  context.clearRect(0, 0, canvas.width, canvas.height);
-
-  await page.render({
-    canvasContext: context,
-    viewport,
-    transform: outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0],
-  }).promise;
-}
-
-function updateSplitThumbSelection() {
-  $$('.split-thumb').forEach((thumb) => {
-    thumb.classList.toggle(
-      'active',
-      Number.parseInt(thumb.dataset.page || '0', 10) === state.splitPreview.currentPage
-    );
-  });
-}
-
-async function renderSplitMainPreview() {
-  const { pdfDoc, currentPage, pageCount } = state.splitPreview;
-  if (!pdfDoc || !pageCount) {
-    setSplitPreviewEmpty(state.splitPreview.error || 'Load a PDF to preview pages.');
-    updateSplitPreviewControls();
-    return;
-  }
-
-  const wrap = $('#splitPreviewCanvasWrap');
-  const canvas = $('#splitPreviewCanvas');
-  if (!wrap || !canvas) return;
-
-  const renderId = ++state.splitPreview.renderToken;
-  showSplitPreviewCanvas();
-  updateSplitPreviewControls();
-
-  try {
-    const targetWidth = Math.min(Math.max(wrap.clientWidth - 32, 220), 620);
-    await renderPdfPageToCanvas(pdfDoc, currentPage, canvas, targetWidth);
-    if (renderId !== state.splitPreview.renderToken) return;
-    showSplitPreviewCanvas();
-    updateSplitThumbSelection();
-  } catch {
-    if (renderId !== state.splitPreview.renderToken) return;
-    state.splitPreview.error = 'Page preview could not be rendered.';
-    setSplitPreviewEmpty(state.splitPreview.error);
-  }
-}
-
-async function renderSplitThumbs(rangeState) {
-  const thumbGrid = $('#splitThumbGrid');
-  const selectionMeta = $('#splitSelectionMeta');
-  const { pdfDoc } = state.splitPreview;
-  if (!thumbGrid || !selectionMeta) return;
-
-  if (!pdfDoc || !rangeState.valid || !rangeState.pageCount) {
-    selectionMeta.textContent = rangeState.valid
-      ? 'preview unavailable'
-      : 'waiting for valid range...';
-    thumbGrid.innerHTML = '<div class="split-empty-card">Selected pages will appear here.</div>';
-    return;
-  }
-
-  const pages = [];
-  for (let page = rangeState.start; page <= rangeState.end; page += 1) {
-    pages.push(page);
-    if (pages.length >= SPLIT_THUMB_LIMIT) break;
-  }
-
-  selectionMeta.textContent = rangeState.count > SPLIT_THUMB_LIMIT
-    ? `showing ${pages.length} of ${rangeState.count} selected pages`
-    : `${rangeState.count} page${rangeState.count === 1 ? '' : 's'} selected`;
-
-  thumbGrid.innerHTML = pages.map((pageNumber) => `
-    <button type="button" class="split-thumb" data-page="${pageNumber}">
-      <canvas class="split-thumb-canvas"></canvas>
-      <span class="split-thumb-label">page ${pageNumber}</span>
-    </button>
-  `).join('');
-
-  thumbGrid.querySelectorAll('.split-thumb').forEach((thumb) => {
-    thumb.addEventListener('click', () => {
-      state.splitPreview.currentPage = Number.parseInt(thumb.dataset.page, 10);
-      updateSplitPreviewControls();
-      updateSplitThumbSelection();
-      renderSplitMainPreview();
+  if (state.currentTool === 'remove-pages') {
+    thumbs.forEach((thumb) => {
+      const page = parseInt(thumb.dataset.page, 10);
+      thumb.classList.toggle('selected', state.selectedPages.has(page));
     });
-  });
-
-  const renderId = ++state.splitPreview.renderToken;
-
-  await Promise.all(
-    pages.map(async (pageNumber) => {
-      const thumb = thumbGrid.querySelector(`.split-thumb[data-page="${pageNumber}"] .split-thumb-canvas`);
-      if (!thumb) return;
-      await renderPdfPageToCanvas(pdfDoc, pageNumber, thumb, 120);
-    })
-  ).catch(() => {
-    if (renderId !== state.splitPreview.renderToken) return;
-    selectionMeta.textContent = 'thumbnail preview unavailable';
-  });
-
-  if (renderId !== state.splitPreview.renderToken) return;
-  updateSplitThumbSelection();
-}
-
-function updateSplitRangeUI() {
-  syncSplitInputBounds();
-
-  const startInput = $('#splitStart');
-  const endInput = $('#splitEnd');
-  const rangeState = getSplitRangeState();
-  const file = state.files.split[0];
-  const summary = $('#splitSummary');
-  const hint = $('#splitRangeHint');
-
-  startInput?.classList.toggle('invalid', !rangeState.valid);
-  endInput?.classList.toggle('invalid', !rangeState.valid);
-
-  if (!file) {
-    resetSplitPreview();
-    updateExecButton('split');
-    return;
   }
 
-  if (state.splitPreview.isLoading) {
-    summary.textContent = `Inspecting ${file.name}...`;
-    hint.textContent = 'Loading page previews...';
-    $('#splitSelectionMeta').textContent = 'building preview...';
-    $('#splitThumbGrid').innerHTML = '<div class="split-empty-card">Rendering page previews...</div>';
-    setSplitPreviewEmpty('Rendering preview...');
-    updateExecButton('split');
-    return;
-  }
+  if (state.currentTool === 'split') {
+    const startInput = $('#opt-start');
+    const endInput = $('#opt-end');
+    const start = parseInt(startInput?.value, 10) || 1;
+    const end = parseInt(endInput?.value, 10) || state.previewPages;
 
-  if (state.splitPreview.error) {
-    summary.textContent = `${file.name} loaded. Preview unavailable.`;
-    hint.textContent = state.splitPreview.error;
-  } else if (state.splitPreview.pageCount) {
-    const countText = rangeState.valid
-      ? `${rangeState.count} page${rangeState.count === 1 ? '' : 's'} selected`
-      : 'invalid range';
-    summary.textContent = `${file.name} • ${state.splitPreview.pageCount} pages • ${countText}`;
-    hint.textContent = rangeState.valid
-      ? `Split will extract pages ${rangeState.start}-${rangeState.end}.`
-      : rangeState.reason;
-  } else {
-    summary.textContent = `${file.name} ready to split.`;
-    hint.textContent = rangeState.valid
-      ? `Split will extract pages ${rangeState.start}-${rangeState.end}.`
-      : rangeState.reason;
-  }
-
-  if (rangeState.valid && state.splitPreview.pageCount) {
-    state.splitPreview.currentPage = Math.min(
-      Math.max(state.splitPreview.currentPage, rangeState.start),
-      rangeState.end
-    );
-  }
-
-  updateExecButton('split');
-  updateSplitPreviewControls();
-
-  if (state.splitPreview.pageCount) {
-    renderSplitMainPreview();
-    renderSplitThumbs(rangeState);
-  } else if (!state.splitPreview.error) {
-    setSplitPreviewEmpty('Preview is not ready yet.');
+    thumbs.forEach((thumb) => {
+      const page = parseInt(thumb.dataset.page, 10);
+      const inRange = page >= start && page <= end;
+      thumb.classList.toggle('in-range', inRange);
+      thumb.classList.toggle('out-of-range', !inRange);
+    });
   }
 }
 
-async function loadSplitPreview(file) {
-  const fileToken = ++state.splitPreview.fileToken;
-  state.splitPreview.isLoading = true;
-  state.splitPreview.error = '';
-  state.splitPreview.pdfDoc = null;
-  state.splitPreview.pageCount = 0;
-  state.splitPreview.currentPage = 1;
-  updateSplitRangeUI();
+// ── Job Submission ─────────────────────────────────────────────
+async function submitJob() {
+  if (state.isProcessing || state.files.length === 0) return;
 
-  if (!pdfjs) {
-    state.splitPreview.isLoading = false;
-    state.splitPreview.error = 'Preview library failed to load, but split still works.';
-    updateSplitRangeUI();
-    return;
-  }
+  const tool = TOOLS[state.currentTool];
+  const btn = $('#execBtn');
 
-  try {
-    const fileBytes = await file.arrayBuffer();
-    if (fileToken !== state.splitPreview.fileToken) return;
-
-    const pdfDoc = await pdfjs.getDocument({ data: fileBytes }).promise;
-    if (fileToken !== state.splitPreview.fileToken) return;
-
-    state.splitPreview.pdfDoc = pdfDoc;
-    state.splitPreview.pageCount = pdfDoc.numPages;
-    state.splitPreview.currentPage = 1;
-    state.splitPreview.isLoading = false;
-    state.splitPreview.error = '';
-
-    $('#splitStart').value = '1';
-    $('#splitEnd').value = String(pdfDoc.numPages);
-
-    updateSplitRangeUI();
-  } catch {
-    if (fileToken !== state.splitPreview.fileToken) return;
-    state.splitPreview.isLoading = false;
-    state.splitPreview.error = 'Could not parse this PDF for preview. You can still split it manually.';
-    updateSplitRangeUI();
-  }
-}
-
-// ── Terminal Output Helpers ──────────────────────────────────
-
-function appendOutput(panelId, html) {
-  const container = $(`#${panelId}Output`);
-  if (!container) return;
-  const div = document.createElement('div');
-  div.innerHTML = html;
-  container.appendChild(div);
-  container.scrollTop = container.scrollHeight;
-}
-
-function clearOutput(panelId) {
-  const container = $(`#${panelId}Output`);
-  if (container) container.innerHTML = '';
-}
-
-function logPrompt(panelId, command) {
-  appendOutput(
-    panelId,
-    `<div class="prompt-line"><span class="prompt">user@pdf-toolkit:~$</span> <span class="cmd">${escapeHtml(command)}</span></div>`,
-  );
-}
-
-function logResult(panelId, text, cls = '') {
-  appendOutput(
-    panelId,
-    `<div class="output-text ${cls}">${text}</div>`,
-  );
-}
-
-// ── Job Submission ───────────────────────────────────────────
-
-async function submitJob(operation) {
-  const files = state.files[operation];
-  if (!files.length) return;
-
-  const btn = $(`#${operation}ExecBtn`);
-  btn.disabled = true;
+  state.isProcessing = true;
   btn.classList.add('loading');
-  btn.innerHTML = '<span class="spinner"></span> processing...';
-
-  const outputPanel = operation;
-  const commandParts = [
-    `pdf-toolkit ${operation}`,
-    `--files ${files.map((f) => f.name).join(' ')}`,
-  ];
+  btn.disabled = true;
+  hideResult();
 
   const formData = new FormData();
-  files.forEach((f) => formData.append('files', f));
-  formData.append('operation', operation);
+  state.files.forEach((f) => formData.append('files', f));
+  formData.append('operation', state.currentTool);
 
-  if (operation === 'split') {
-    const splitRange = getSplitRangeState();
-    if (!splitRange.valid) {
-      logResult(outputPanel, `<span class="err">error:</span> ${escapeHtml(splitRange.reason)}`);
-      resetExecButton(operation);
-      return;
-    }
-
-    const start = $('#splitStart').value;
-    const end = $('#splitEnd').value;
-    formData.append('start', start);
-    formData.append('end', end);
-    commandParts.push(`--start ${start}`);
-    commandParts.push(`--end ${end}`);
+  // Add option values
+  const options = getOptionValues();
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== '') formData.append(key, value);
   }
 
-  if (operation === 'compress') {
-    const level = $('#compressLevel')?.value || 'best';
-    formData.append('level', level);
-    commandParts.push(`--level ${level}`);
-  }
-
-  logPrompt(outputPanel, commandParts.join(' '));
+  showProgress('Uploading files...');
 
   try {
-    const res = await fetch(`${API}/jobs`, { method: 'POST', body: formData });
-    const data = await res.json();
+    // Use XMLHttpRequest for upload progress
+    const { data } = await uploadWithProgress(formData);
 
     if (data.status !== 'accepted') {
-      logResult(outputPanel, `<span class="err">error:</span> ${escapeHtml(data.message)}`);
-      resetExecButton(operation);
-      return;
+      throw new Error(data.message || 'Server rejected the request');
     }
 
     const { jobId } = data.data;
-    logResult(outputPanel, `<span class="cmt">job queued:</span> <span class="val">${jobId}</span>`);
-    logResult(outputPanel, `<span class="cmt">state:</span> <span class="kw">queued</span> <span class="spinner"></span>`);
+    showProgress('Processing...', -1);
 
-    addJobToPanel(jobId, operation);
-    pollJob(jobId, operation);
+    // Poll for completion
+    const result = await pollJobUntilDone(jobId);
+
+    hideProgress();
+
+    if (result.state === 'completed') {
+      // Append sessionId to the download URL so the browser can access it
+      // (plain <a href> navigation doesn't send the X-Session-ID header)
+      const rawUrl = result.downloadUrl || `${API}/jobs/${jobId}/download`;
+      const sep = rawUrl.includes('?') ? '&' : '?';
+      const downloadUrl = `${rawUrl}${sep}sessionId=${SESSION_ID}`;
+      const downloadName = result.downloadName || 'result.pdf';
+
+      let metaHtml = '';
+      if (result.result) {
+        const hiddenKeys = ['outputPath'];
+        const entries = Object.entries(result.result)
+          .filter(([k]) => !hiddenKeys.includes(k))
+          .map(([k, v]) => `<strong>${escapeHtml(k)}:</strong> ${escapeHtml(v)}`)
+          .join(' &nbsp;·&nbsp; ');
+        if (entries) metaHtml = entries;
+      }
+      if (result.duration) {
+        metaHtml += (metaHtml ? '<br>' : '') + `Completed in ${escapeHtml(result.duration)}`;
+      }
+
+      showResult(metaHtml || 'Your PDF has been processed successfully.', downloadUrl, downloadName);
+      showToast('PDF processed successfully!', 'success');
+
+      // Reset files
+      state.files = [];
+      renderFileList();
+    } else {
+      throw new Error(result.error || 'Processing failed');
+    }
   } catch (err) {
-    logResult(outputPanel, `<span class="err">fetch error:</span> ${escapeHtml(err.message)}`);
-    resetExecButton(operation);
+    hideProgress();
+    showToast(err.message || 'Something went wrong. Please try again.', 'error');
+  } finally {
+    state.isProcessing = false;
+    btn.classList.remove('loading');
+    updateExecButton();
   }
 }
 
-function resetExecButton(operation) {
-  const btn = $(`#${operation}ExecBtn`);
-  if (!btn) return;
-  btn.classList.remove('loading');
-  btn.innerHTML = `<span class="prompt-char">$</span> execute ${operation}`;
-  updateExecButton(operation);
+function uploadWithProgress(formData) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API}/jobs`);
+    xhr.setRequestHeader('X-Session-ID', SESSION_ID);
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const pct = Math.round((e.loaded / e.total) * 100);
+        showProgress(`Uploading... ${pct}%`, pct);
+      }
+    };
+
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText);
+        resolve({ data });
+      } catch {
+        reject(new Error('Invalid server response'));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error('Network error. Is the server running?'));
+    xhr.send(formData);
+  });
 }
 
-// ── Job Polling ──────────────────────────────────────────────
+async function pollJobUntilDone(jobId, maxPolls = 300) {
+  for (let i = 0; i < maxPolls; i++) {
+    await new Promise((r) => setTimeout(r, 800));
 
-function pollJob(jobId, operation) {
-  const interval = setInterval(async () => {
     try {
-      const res = await fetch(`${API}/jobs/${jobId}`);
+      const res = await fetch(`${API}/jobs/${jobId}`, {
+        headers: apiHeaders(),
+      });
       const data = await res.json();
       const job = data.data;
 
-      updateJobInPanel(jobId, job);
-
-      if (job.state === 'completed') {
-        clearInterval(interval);
-        onJobCompleted(jobId, job, operation);
-      } else if (job.state === 'failed') {
-        clearInterval(interval);
-        onJobFailed(jobId, job, operation);
+      if (job.state === 'completed' || job.state === 'failed') {
+        return job;
       }
+
+      // Update progress label
+      showProgress(`Processing... (attempt ${job.attempts || 1})`, -1);
     } catch {
-      clearInterval(interval);
+      // Retry on network error
     }
-  }, 800);
+  }
 
-  state.pollingIntervals[jobId] = interval;
+  throw new Error('Processing timed out. Please try again.');
 }
 
-function onJobCompleted(jobId, job, operation) {
-  const outputPanel = operation;
+// Execute button
+$('#execBtn')?.addEventListener('click', submitJob);
 
-  const lastSpinner = $(`#${outputPanel}Output .spinner`);
-  if (lastSpinner) lastSpinner.closest('.output-text')?.remove();
-
-  logResult(outputPanel, `<span class="cmt">state:</span> <span class="val">completed</span> (${job.duration})`);
-
-  if (job.result) {
-    if (operation === 'compress') {
-      const compressionSummary = renderCompressionSummary(job.result);
-      if (compressionSummary) logResult(outputPanel, compressionSummary);
-    }
-
-    const hiddenKeys = ['outputPath'];
-    if (operation === 'compress') {
-      hiddenKeys.push('originalSize', 'compressedSize', 'savedBytes', 'savedPercent', 'compressionLevel');
-    }
-
-    const info = Object.entries(job.result)
-      .filter(([k]) => !hiddenKeys.includes(k))
-      .map(([k, v]) => `<span class="cmt">${escapeHtml(k)}:</span> <span class="val">${escapeHtml(v)}</span>`)
-      .join('  ');
-    if (info) logResult(outputPanel, info);
-  }
-
-  const downloadUrl = job.downloadUrl || `${API}/jobs/${jobId}/download`;
-  if (job.downloadName) {
-    logResult(
-      outputPanel,
-      `<span class="cmt">download file:</span> <span class="val">${escapeHtml(job.downloadName)}</span>`,
-    );
-  }
-  logResult(
-    outputPanel,
-    `<a href="${downloadUrl}" class="job-download" download="${escapeHtml(job.downloadName || '')}">&#11015; download result</a>`,
-  );
-
-  resetExecButton(operation);
-  state.files[operation] = [];
-  renderFileList(operation);
-  if (operation === 'split') {
-    resetSplitPreview();
-  }
-  refreshQueueStats();
-}
-
-function onJobFailed(jobId, job, operation) {
-  const outputPanel = operation;
-  const lastSpinner = $(`#${outputPanel}Output .spinner`);
-  if (lastSpinner) lastSpinner.closest('.output-text')?.remove();
-
-  logResult(outputPanel, `<span class="err">state: failed</span>`);
-  logResult(outputPanel, `<span class="err">error:</span> ${escapeHtml(job.error || 'Unknown error')}`);
-
-  resetExecButton(operation);
-  refreshQueueStats();
-}
-
-// ── Jobs Panel ───────────────────────────────────────────────
-
-function addJobToPanel(jobId, operation) {
-  const entry = {
-    id: jobId,
-    operation,
-    state: 'queued',
-    createdAt: new Date().toISOString(),
-  };
-  state.jobs.unshift(entry);
-  renderJobsPanel();
-
-  if (state.activePanel !== 'jobs') {
-    const jobsTab = $(`.tab[data-panel="jobs"]`);
-    if (jobsTab) jobsTab.style.color = 'var(--amber)';
-  }
-}
-
-function updateJobInPanel(jobId, jobData) {
-  const job = state.jobs.find((j) => j.id === jobId);
-  if (job) {
-    Object.assign(job, jobData);
-    renderJobsPanel();
-  }
-}
-
-function renderJobsPanel() {
-  const container = $('#jobsOutput');
-  if (!container) return;
-
-  if (state.jobs.length === 0) {
-    container.innerHTML = `
-      <div class="prompt-line"><span class="prompt">user@pdf-toolkit:~$</span> <span class="cmd">tail -f jobs.log</span></div>
-      <div class="output-text cmt">Waiting for jobs...</div>`;
-    return;
-  }
-
-  let html = `<div class="prompt-line"><span class="prompt">user@pdf-toolkit:~$</span> <span class="cmd">tail -f jobs.log</span></div>`;
-
-  for (const job of state.jobs) {
-    const shortId = job.id.slice(0, 8);
-    html += `
-      <div class="job-entry">
-        <div class="job-header">
-          <span class="job-state ${job.state}">${job.state}</span>
-          <span class="job-op">${job.operation}</span>
-          <span class="job-id">${shortId}...</span>
-          ${job.state === 'processing' ? '<span class="spinner"></span>' : ''}
-        </div>`;
-
-    if (job.duration) {
-      html += `<div class="job-detail">duration: <span class="val">${job.duration}</span></div>`;
-    }
-    if (job.downloadName) {
-      html += `<div class="job-detail">file: <span class="val">${escapeHtml(job.downloadName)}</span></div>`;
-    }
-    if (job.state === 'completed' && job.id) {
-      html += `<a href="${escapeHtml(job.downloadUrl || `${API}/jobs/${job.id}/download`)}" class="job-download" download="${escapeHtml(job.downloadName || '')}">&#11015; download</a>`;
-    }
-    if (job.state === 'failed' && job.error) {
-      html += `<div class="job-detail"><span class="err">error: ${escapeHtml(job.error)}</span></div>`;
-    }
-    html += `</div>`;
-  }
-
-  container.innerHTML = html;
-  container.scrollTop = container.scrollHeight;
-}
-
-// ── Execute Buttons ──────────────────────────────────────────
-
-$('#mergeExecBtn')?.addEventListener('click', () => submitJob('merge'));
-$('#splitExecBtn')?.addEventListener('click', () => submitJob('split'));
-$('#compressExecBtn')?.addEventListener('click', () => submitJob('compress'));
-
-$('#splitStart')?.addEventListener('input', updateSplitRangeUI);
-$('#splitEnd')?.addEventListener('input', updateSplitRangeUI);
-
-$('#splitPrevPageBtn')?.addEventListener('click', () => {
-  if (state.splitPreview.currentPage <= 1) return;
-  state.splitPreview.currentPage -= 1;
-  updateSplitPreviewControls();
-  renderSplitMainPreview();
-});
-
-$('#splitNextPageBtn')?.addEventListener('click', () => {
-  if (!state.splitPreview.pageCount || state.splitPreview.currentPage >= state.splitPreview.pageCount) return;
-  state.splitPreview.currentPage += 1;
-  updateSplitPreviewControls();
-  renderSplitMainPreview();
-});
-
-let splitResizeTimer;
-window.addEventListener('resize', () => {
-  clearTimeout(splitResizeTimer);
-  splitResizeTimer = setTimeout(() => {
-    if (state.activePanel === 'split' && state.splitPreview.pdfDoc) {
-      renderSplitMainPreview();
-    }
-  }, 120);
-});
-
-resetSplitPreview();
-
-// ── Queue Stats ──────────────────────────────────────────────
-
+// ── Queue Stats ────────────────────────────────────────────────
 async function refreshQueueStats() {
   try {
-    const res = await fetch(`${API}/jobs`);
+    const res = await fetch(`${API}/jobs`, { headers: apiHeaders() });
     const data = await res.json();
     const stats = data.data;
-    const total = (stats.queued || 0) + (stats.processing || 0);
-    $('#queueCount').textContent = total;
+    const active = (stats.queued || 0) + (stats.processing || 0);
 
-    const dot = $('.qi-dot');
-    if (dot) {
-      dot.style.background =
-        total > 0 ? 'var(--amber)' : 'var(--green)';
+    const label = $('#queueLabel');
+    const dot = $('#statusDot');
+
+    if (active > 0) {
+      label.textContent = `${active} job${active > 1 ? 's' : ''} active`;
+      dot.style.background = 'var(--warning)';
+    } else {
+      label.textContent = 'Ready';
+      dot.style.background = 'var(--success)';
     }
   } catch {
     // ignore
   }
 }
 
-setInterval(refreshQueueStats, 3000);
+setInterval(refreshQueueStats, 5000);
 refreshQueueStats();
 
-// ── Sidebar Operations List ──────────────────────────────────
-
-async function loadOperations() {
-  try {
-    const res = await fetch(`${API}/pdf/operations`);
-    const data = await res.json();
-    const container = $('#sidebarOps');
-    if (!container || !data.data) return;
-
-    container.innerHTML = data.data.operations
-      .map(
-        (op) => `
-      <div class="sidebar-op-item">
-        <span class="op-name">${op.name}</span>
-        <span class="op-desc">${op.description}</span>
-      </div>`,
-      )
-      .join('');
-  } catch {
-    // server might not be ready
-  }
-}
-
-loadOperations();
-
-// ── CLI Input ────────────────────────────────────────────────
-
-const cliInput = $('#cliInput');
-const vimMode = $('#vimMode');
-
-cliInput?.addEventListener('focus', () => {
-  vimMode.textContent = 'INSERT';
-  vimMode.classList.remove('normal');
-  vimMode.classList.add('insert');
-});
-
-cliInput?.addEventListener('blur', () => {
-  vimMode.textContent = 'NORMAL';
-  vimMode.classList.remove('insert');
-  vimMode.classList.add('normal');
-});
-
-vimMode.classList.add('normal');
-
-cliInput?.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    const cmd = cliInput.value.trim();
-    cliInput.value = '';
-    if (cmd) handleCommand(cmd);
+// ── Keyboard Shortcuts ─────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  // Escape to go back
+  if (e.key === 'Escape' && state.currentView === 'operation') {
+    goHome();
   }
 });
 
-const CLI_COMMANDS = {
-  help() {
-    return `<span class="val">Available commands:</span>
-  <span class="fn">help</span>      <span class="cmt">-- show this help</span>
-  <span class="fn">status</span>    <span class="cmt">-- show queue statistics</span>
-  <span class="fn">ops</span>       <span class="cmt">-- list available operations</span>
-  <span class="fn">clear</span>     <span class="cmt">-- clear terminal output</span>
-  <span class="fn">whoami</span>    <span class="cmt">-- display user info</span>
-  <span class="fn">date</span>      <span class="cmt">-- display current date/time</span>
-  <span class="fn">health</span>    <span class="cmt">-- check server health</span>
-  <span class="fn">merge</span>     <span class="cmt">-- switch to merge panel</span>
-  <span class="fn">split</span>     <span class="cmt">-- switch to split panel</span>
-  <span class="fn">compress</span>  <span class="cmt">-- switch to compress panel</span>
-  <span class="fn">jobs</span>      <span class="cmt">-- switch to jobs panel</span>`;
-  },
-
-  whoami() {
-    return `<span class="val">user</span> <span class="cmt">@ pdf-toolkit (guest session)</span>`;
-  },
-
-  date() {
-    return `<span class="val">${new Date().toString()}</span>`;
-  },
-
-  clear() {
-    clearOutput('home');
-    return null;
-  },
-
-  async status() {
-    try {
-      const res = await fetch(`${API}/jobs`);
-      const data = await res.json();
-      const s = data.data;
-      return `<span class="val">Queue Statistics:</span>
-  <span class="cmt">queued:</span>     <span class="val">${s.queued}</span>
-  <span class="cmt">processing:</span> <span class="val">${s.processing}</span>
-  <span class="cmt">completed:</span>  <span class="val">${s.completed}</span>
-  <span class="cmt">failed:</span>     <span class="val">${s.failed}</span>
-  <span class="cmt">total:</span>      <span class="val">${s.total}</span>`;
-    } catch {
-      return `<span class="err">error: could not connect to server</span>`;
-    }
-  },
-
-  async health() {
-    try {
-      const res = await fetch(`${API}/health`);
-      const data = await res.json();
-      return `<span class="val">Server Health:</span>
-  <span class="cmt">status:</span>    <span class="val">${data.status}</span>
-  <span class="cmt">uptime:</span>    <span class="val">${data.uptime}s</span>
-  <span class="cmt">timestamp:</span> <span class="val">${data.timestamp}</span>`;
-    } catch {
-      return `<span class="err">error: server unreachable</span>`;
-    }
-  },
-
-  async ops() {
-    try {
-      const res = await fetch(`${API}/pdf/operations`);
-      const data = await res.json();
-      const lines = data.data.operations
-        .map((op) => `  <span class="fn">${op.name.padEnd(12)}</span> <span class="cmt">${op.description}</span>  [${op.minFiles}-${op.maxFiles} files]`)
-        .join('\n');
-      return `<span class="val">Available Operations:</span>\n${lines}`;
-    } catch {
-      return `<span class="err">error: could not fetch operations</span>`;
-    }
-  },
-
-  merge() { switchPanel('merge'); return `<span class="cmt">switched to merge panel</span>`; },
-  split() { switchPanel('split'); return `<span class="cmt">switched to split panel</span>`; },
-  compress() { switchPanel('compress'); return `<span class="cmt">switched to compress panel</span>`; },
-  jobs() { switchPanel('jobs'); return `<span class="cmt">switched to jobs panel</span>`; },
-  home() { switchPanel('home'); return `<span class="cmt">switched to home panel</span>`; },
-};
-
-async function handleCommand(cmd) {
-  const panel = 'home';
-  if (state.activePanel !== 'home') {
-    switchPanel('home');
-  }
-
-  logPrompt(panel, cmd);
-
-  const parts = cmd.split(/\s+/);
-  const command = parts[0].toLowerCase();
-
-  if (CLI_COMMANDS[command]) {
-    const result = await CLI_COMMANDS[command](...parts.slice(1));
-    if (result !== null && result !== undefined) {
-      logResult(panel, `<pre>${result}</pre>`);
-    }
-  } else {
-    logResult(panel, `<span class="err">zsh: command not found: ${command}</span>`);
-  }
-}
+// ── Initialization ─────────────────────────────────────────────
+showView('home');

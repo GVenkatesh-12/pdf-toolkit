@@ -1,333 +1,251 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>pdf-toolkit -- terminal</title>
+  <title>PDF Toolkit — Free Online PDF Tools</title>
+  <meta name="description" content="Merge, split, compress, rotate, watermark, and add page numbers to your PDFs online for free. No signup required. Files auto-delete after 1 hour." />
+  <meta property="og:title" content="PDF Toolkit — Free Online PDF Tools" />
+  <meta property="og:description" content="Process your PDFs online. Merge, split, compress, rotate, watermark, and more." />
+  <meta property="og:type" content="website" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/css/style.css" />
 </head>
 <body>
 
-  <!-- ── Window Chrome ──────────────────────────────────────── -->
-  <div id="app">
-    <header class="title-bar">
-      <div class="traffic-lights">
-        <span class="dot dot-red"></span>
-        <span class="dot dot-yellow"></span>
-        <span class="dot dot-green"></span>
-      </div>
-      <div class="title-text">pdf-toolkit &mdash; ~/projects/pdf-toolkit</div>
-      <div class="title-right">
-        <span class="queue-indicator" id="queueIndicator" title="Queue stats">
-          <span class="qi-dot"></span> queue: <span id="queueCount">0</span>
+  <!-- Toast Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- ── Header ──────────────────────────────────── -->
+  <header class="header" id="appHeader">
+    <div class="header-inner">
+      <a href="#" class="logo" id="logoLink">
+        <span class="logo-icon">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+            <rect x="3" y="2" width="16" height="22" rx="3" stroke="currentColor" stroke-width="2"/>
+            <rect x="9" y="4" width="16" height="22" rx="3" fill="currentColor" opacity="0.15" stroke="currentColor" stroke-width="2"/>
+            <line x1="13" y1="11" x2="21" y2="11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="13" y1="15" x2="21" y2="15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="13" y1="19" x2="18" y2="19" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
         </span>
+        <span class="logo-text">PDF Toolkit</span>
+      </a>
+      <nav class="header-nav">
+        <span class="nav-status" id="queueStatus">
+          <span class="status-dot" id="statusDot"></span>
+          <span id="queueLabel">Ready</span>
+        </span>
+        <button class="theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle dark/light theme">
+          <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="main" id="mainContent">
+
+    <!-- ── Hero / Tool Grid View ─────────────────── -->
+    <section class="view active" id="view-home">
+      <div class="hero">
+        <h1 class="hero-title">Every tool you need to work with PDFs</h1>
+        <p class="hero-subtitle">Merge, split, compress, rotate, watermark, and more — completely free. Your files are automatically deleted after 1 hour.</p>
       </div>
-    </header>
 
-    <!-- ── Tab Bar ────────────────────────────────────────────── -->
-    <nav class="tab-bar">
-      <button class="tab active" data-panel="home">
-        <span class="tab-dot dot-green"></span> welcome.md
-      </button>
-      <button class="tab" data-panel="merge">
-        <span class="tab-dot dot-cyan"></span> merge.sh
-      </button>
-      <button class="tab" data-panel="split">
-        <span class="tab-dot dot-amber"></span> split.sh
-      </button>
-      <button class="tab" data-panel="compress">
-        <span class="tab-dot dot-purple"></span> compress.sh
-      </button>
-      <button class="tab" data-panel="jobs">
-        <span class="tab-dot dot-red"></span> jobs.log
-      </button>
-    </nav>
+      <div class="tools-grid" id="toolsGrid">
+        <!-- Merge -->
+        <button class="tool-card" data-tool="merge">
+          <div class="tool-icon tool-icon--merge">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+          </div>
+          <h3 class="tool-title">Merge PDF</h3>
+          <p class="tool-desc">Combine multiple PDFs into a single document</p>
+          <span class="tool-badge">2-10 files</span>
+        </button>
 
-    <div class="workspace">
-      <!-- ── Sidebar ──────────────────────────────────────────── -->
-      <aside class="sidebar">
-        <div class="sidebar-header">EXPLORER</div>
-        <div class="sidebar-section">
-          <div class="sidebar-section-title">&#9662; PDF-TOOLKIT</div>
-          <button class="sidebar-item active" data-panel="home">
-            <span class="file-icon">&#9679;</span>
-            <span class="file-name">welcome.md</span>
-          </button>
-          <button class="sidebar-item" data-panel="merge">
-            <span class="file-icon mod">M</span>
-            <span class="file-name">merge.sh</span>
-          </button>
-          <button class="sidebar-item" data-panel="split">
-            <span class="file-icon mod">M</span>
-            <span class="file-name">split.sh</span>
-          </button>
-          <button class="sidebar-item" data-panel="compress">
-            <span class="file-icon add">+</span>
-            <span class="file-name">compress.sh</span>
-          </button>
-          <button class="sidebar-item" data-panel="jobs">
-            <span class="file-icon staged">&#9679;</span>
-            <span class="file-name">jobs.log</span>
-          </button>
+        <!-- Split -->
+        <button class="tool-card" data-tool="split">
+          <div class="tool-icon tool-icon--split">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M14 14l7 7M4 4l5 5"/></svg>
+          </div>
+          <h3 class="tool-title">Split PDF</h3>
+          <p class="tool-desc">Extract a range of pages from your PDF</p>
+          <span class="tool-badge">1 file</span>
+        </button>
+
+        <!-- Compress -->
+        <button class="tool-card" data-tool="compress">
+          <div class="tool-icon tool-icon--compress">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+          </div>
+          <h3 class="tool-title">Compress PDF</h3>
+          <p class="tool-desc">Reduce file size with adjustable quality</p>
+          <span class="tool-badge">1 file</span>
+        </button>
+
+        <!-- Rotate -->
+        <button class="tool-card" data-tool="rotate">
+          <div class="tool-icon tool-icon--rotate">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 4v6h6M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+          </div>
+          <h3 class="tool-title">Rotate PDF</h3>
+          <p class="tool-desc">Rotate all pages by 90°, 180°, or 270°</p>
+          <span class="tool-badge">1 file</span>
+        </button>
+
+        <!-- Remove Pages -->
+        <button class="tool-card" data-tool="remove-pages">
+          <div class="tool-icon tool-icon--remove">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+          </div>
+          <h3 class="tool-title">Remove Pages</h3>
+          <p class="tool-desc">Delete specific pages from your PDF</p>
+          <span class="tool-badge">1 file</span>
+        </button>
+
+        <!-- Watermark -->
+        <button class="tool-card" data-tool="watermark">
+          <div class="tool-icon tool-icon--watermark">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <h3 class="tool-title">Watermark</h3>
+          <p class="tool-desc">Add text watermarks to every page</p>
+          <span class="tool-badge tool-badge--new">NEW</span>
+        </button>
+
+        <!-- Page Numbers -->
+        <button class="tool-card" data-tool="page-numbers">
+          <div class="tool-icon tool-icon--pagenums">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="18.01"/></svg>
+          </div>
+          <h3 class="tool-title">Page Numbers</h3>
+          <p class="tool-desc">Add page numbers to your PDF</p>
+          <span class="tool-badge tool-badge--new">NEW</span>
+        </button>
+
+        <!-- Unlock -->
+        <button class="tool-card" data-tool="unlock">
+          <div class="tool-icon tool-icon--unlock">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
+          </div>
+          <h3 class="tool-title">Unlock PDF</h3>
+          <p class="tool-desc">Remove password protection from a PDF</p>
+          <span class="tool-badge tool-badge--new">NEW</span>
+        </button>
+      </div>
+
+      <div class="trust-bar">
+        <div class="trust-item">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span>Files auto-delete in 1 hour</span>
         </div>
-        <div class="sidebar-section">
-          <div class="sidebar-section-title">&#9662; OPERATIONS</div>
-          <div class="sidebar-ops" id="sidebarOps"></div>
+        <div class="trust-item">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>No signup required</span>
         </div>
-      </aside>
+        <div class="trust-item">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          <span>Session-isolated & secure</span>
+        </div>
+      </div>
+    </section>
 
-      <!-- ── Main Content ─────────────────────────────────────── -->
-      <main class="editor">
-
-        <!-- HOME PANEL -->
-        <section class="panel active" id="panel-home">
-          <div class="code-block">
-            <div class="code-header">
-              <span class="code-lang">markdown</span>
-              <span class="code-file">welcome.md</span>
-            </div>
-            <div class="code-body">
-              <pre><code><span class="ln"> 1</span>  <span class="kw"># </span><span class="str">PDF Toolkit</span>
-<span class="ln"> 2</span>
-<span class="ln"> 3</span>  <span class="cmt">A terminal-style PDF processing tool.</span>
-<span class="ln"> 4</span>  <span class="cmt">Merge, split, and compress your PDFs.</span>
-<span class="ln"> 5</span>
-<span class="ln"> 6</span>  <span class="kw">## </span><span class="str">Available Operations</span>
-<span class="ln"> 7</span>
-<span class="ln"> 8</span>  <span class="fn">merge</span>    <span class="cmt">-- combine multiple PDFs into one</span>
-<span class="ln"> 9</span>  <span class="fn">split</span>    <span class="cmt">-- extract a page range from a PDF</span>
-<span class="ln">10</span>  <span class="fn">compress</span> <span class="cmt">-- reduce PDF file size</span>
-<span class="ln">11</span>
-<span class="ln">12</span>  <span class="kw">## </span><span class="str">Usage</span>
-<span class="ln">13</span>
-<span class="ln">14</span>  <span class="cmt">Select an operation from the sidebar or tabs above.</span>
-<span class="ln">15</span>  <span class="cmt">Upload your PDFs, click execute, and download the result.</span>
-<span class="ln">16</span>
-<span class="ln">17</span>  <span class="kw">## </span><span class="str">CLI Commands</span>
-<span class="ln">18</span>
-<span class="ln">19</span>  <span class="cmt">Type commands in the terminal below:</span>
-<span class="ln">20</span>
-<span class="ln">21</span>  <span class="fn">help</span>      <span class="cmt">-- show available commands</span>
-<span class="ln">22</span>  <span class="fn">status</span>    <span class="cmt">-- show queue statistics</span>
-<span class="ln">23</span>  <span class="fn">ops</span>       <span class="cmt">-- list available operations</span>
-<span class="ln">24</span>  <span class="fn">clear</span>     <span class="cmt">-- clear terminal output</span>
-<span class="ln">25</span>  <span class="fn">whoami</span>    <span class="cmt">-- display user info</span>
-<span class="ln">26</span>  <span class="fn">date</span>      <span class="cmt">-- display current date/time</span></code></pre>
-            </div>
+    <!-- ── Operation View (shown when a tool is selected) ──── -->
+    <section class="view" id="view-operation">
+      <div class="op-header">
+        <button class="back-btn" id="backBtn" aria-label="Go back to tools">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+          <span>All Tools</span>
+        </button>
+        <div class="op-title-group">
+          <div class="op-icon" id="opIcon"></div>
+          <div>
+            <h2 class="op-title" id="opTitle">Merge PDF</h2>
+            <p class="op-subtitle" id="opSubtitle">Combine multiple PDFs into one</p>
           </div>
+        </div>
+      </div>
 
-          <div class="terminal-output" id="homeOutput">
-            <div class="prompt-line typewriter" id="welcomePrompt">
-              <span class="prompt">user@pdf-toolkit:~$</span> <span class="cmd">cat welcome.md</span>
-            </div>
-            <div class="output-text">
-              <span class="val">Welcome to PDF Toolkit v1.0.0</span><br>
-              <span class="cmt">Server running. Queue worker active. Ready for operations.</span>
-            </div>
-          </div>
-        </section>
-
-        <!-- MERGE PANEL -->
-        <section class="panel" id="panel-merge">
-          <div class="code-block">
-            <div class="code-header">
-              <span class="code-lang">bash</span>
-              <span class="code-file">merge.sh</span>
-            </div>
-            <div class="code-body">
-              <pre><code><span class="ln">1</span>  <span class="cmt">#!/bin/bash</span>
-<span class="ln">2</span>  <span class="cmt"># Merge multiple PDFs into a single document</span>
-<span class="ln">3</span>  <span class="cmt"># Upload 2-10 PDF files, receive one merged output</span>
-<span class="ln">4</span>
-<span class="ln">5</span>  <span class="fn">pdf-toolkit</span> <span class="kw">merge</span> <span class="str">\</span>
-<span class="ln">6</span>    <span class="kw">--input</span> <span class="str">"file1.pdf"</span> <span class="str">"file2.pdf"</span> <span class="str">...</span> <span class="str">\</span>
-<span class="ln">7</span>    <span class="kw">--output</span> <span class="str">"merged.pdf"</span></code></pre>
-            </div>
-          </div>
-
-          <div class="operation-form">
-            <div class="form-header">
-              <span class="prompt">user@pdf-toolkit:~$</span> <span class="fn">merge</span> <span class="kw">--interactive</span>
-            </div>
-            <div class="drop-zone" id="mergeDropZone" data-operation="merge">
-              <div class="drop-icon">&#9655; DROP PDF FILES HERE</div>
-              <div class="drop-sub">or click to browse &middot; 2-10 files &middot; max 50MB each</div>
-              <input type="file" class="file-input" id="mergeFileInput" multiple accept=".pdf" />
-            </div>
-            <div class="file-list" id="mergeFileList"></div>
-            <button class="exec-btn" id="mergeExecBtn" disabled>
-              <span class="prompt-char">$</span> execute merge
-            </button>
-          </div>
-
-          <div class="terminal-output" id="mergeOutput"></div>
-        </section>
-
-        <!-- SPLIT PANEL -->
-        <section class="panel" id="panel-split">
-          <div class="code-block">
-            <div class="code-header">
-              <span class="code-lang">bash</span>
-              <span class="code-file">split.sh</span>
-            </div>
-            <div class="code-body">
-              <pre><code><span class="ln">1</span>  <span class="cmt">#!/bin/bash</span>
-<span class="ln">2</span>  <span class="cmt"># Extract a range of pages from a PDF</span>
-<span class="ln">3</span>  <span class="cmt"># Upload 1 PDF file, specify start and end pages</span>
-<span class="ln">4</span>
-<span class="ln">5</span>  <span class="fn">pdf-toolkit</span> <span class="kw">split</span> <span class="str">\</span>
-<span class="ln">6</span>    <span class="kw">--input</span> <span class="str">"document.pdf"</span> <span class="str">\</span>
-<span class="ln">7</span>    <span class="kw">--start</span> <span class="val">2</span> <span class="kw">--end</span> <span class="val">5</span></code></pre>
-            </div>
-          </div>
-
-          <div class="operation-form">
-            <div class="form-header">
-              <span class="prompt">user@pdf-toolkit:~$</span> <span class="fn">split</span> <span class="kw">--interactive</span>
-            </div>
-            <div class="drop-zone" id="splitDropZone" data-operation="split">
-              <div class="drop-icon">&#9655; DROP PDF FILE HERE</div>
-              <div class="drop-sub">or click to browse &middot; 1 file &middot; max 50MB</div>
-              <input type="file" class="file-input" id="splitFileInput" accept=".pdf" />
-            </div>
-            <div class="file-list" id="splitFileList"></div>
-            <div class="option-row">
-              <label class="opt-label"><span class="kw">--start</span>
-                <input type="number" class="opt-input" id="splitStart" min="1" value="1" />
-              </label>
-              <label class="opt-label"><span class="kw">--end</span>
-                <input type="number" class="opt-input" id="splitEnd" min="1" value="1" />
-              </label>
-              <span class="opt-note" id="splitRangeHint">Select a PDF to inspect its pages before splitting.</span>
-            </div>
-            <div class="split-inspector">
-              <div class="split-summary" id="splitSummary">No PDF loaded.</div>
-              <div class="split-preview-layout">
-                <div class="split-preview-stage">
-                  <div class="split-preview-toolbar">
-                    <button type="button" class="preview-btn" id="splitPrevPageBtn" disabled>prev</button>
-                    <span class="split-preview-label" id="splitPreviewLabel">page -- / --</span>
-                    <button type="button" class="preview-btn" id="splitNextPageBtn" disabled>next</button>
-                  </div>
-                  <div class="split-preview-canvas-wrap" id="splitPreviewCanvasWrap">
-                    <canvas id="splitPreviewCanvas" class="split-preview-canvas"></canvas>
-                    <div class="split-preview-empty" id="splitPreviewEmpty">Load a PDF to preview pages.</div>
-                  </div>
-                </div>
-                <div class="split-selection-panel">
-                  <div class="split-selection-head">
-                    <span class="kw">selected pages</span>
-                    <span class="split-selection-meta" id="splitSelectionMeta">waiting for file...</span>
-                  </div>
-                  <div class="split-thumb-grid" id="splitThumbGrid"></div>
-                </div>
+      <div class="op-body">
+        <!-- Left Column: Upload + Options + Actions -->
+        <div class="op-col-left">
+          <!-- Upload Zone -->
+          <div class="upload-zone" id="uploadZone">
+            <div class="upload-zone-inner">
+              <div class="upload-icon">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
               </div>
-            </div>
-            <button class="exec-btn" id="splitExecBtn" disabled>
-              <span class="prompt-char">$</span> execute split
-            </button>
-          </div>
-
-          <div class="terminal-output" id="splitOutput"></div>
-        </section>
-
-        <!-- COMPRESS PANEL -->
-        <section class="panel" id="panel-compress">
-          <div class="code-block">
-            <div class="code-header">
-              <span class="code-lang">bash</span>
-              <span class="code-file">compress.sh</span>
-            </div>
-            <div class="code-body">
-              <pre><code><span class="ln">1</span>  <span class="cmt">#!/bin/bash</span>
-<span class="ln">2</span>  <span class="cmt"># Reduce PDF file size by re-serializing</span>
-<span class="ln">3</span>  <span class="cmt"># Upload 1 PDF file, receive compressed output</span>
-<span class="ln">4</span>
-<span class="ln">5</span>  <span class="fn">pdf-toolkit</span> <span class="kw">compress</span> <span class="str">\</span>
-<span class="ln">6</span>    <span class="kw">--input</span> <span class="str">"large-document.pdf"</span> <span class="str">\</span>
-<span class="ln">7</span>    <span class="kw">--level</span> <span class="str">"best"</span> <span class="str">\</span>
-<span class="ln">8</span>    <span class="kw">--output</span> <span class="str">"compressed.pdf"</span></code></pre>
+              <p class="upload-title">Drop your PDF files here</p>
+              <p class="upload-subtitle" id="uploadSubtitle">or click to browse — max 50 MB each</p>
+              <input type="file" class="upload-input" id="fileInput" accept=".pdf" />
             </div>
           </div>
 
-          <div class="operation-form">
-            <div class="form-header">
-              <span class="prompt">user@pdf-toolkit:~$</span> <span class="fn">compress</span> <span class="kw">--interactive</span>
-            </div>
-            <div class="drop-zone" id="compressDropZone" data-operation="compress">
-              <div class="drop-icon">&#9655; DROP PDF FILE HERE</div>
-              <div class="drop-sub">or click to browse &middot; 1 file &middot; max 50MB</div>
-              <input type="file" class="file-input" id="compressFileInput" accept=".pdf" />
-            </div>
-            <div class="file-list" id="compressFileList"></div>
-            <div class="option-row">
-              <label class="opt-label"><span class="kw">--level</span>
-                <select class="opt-select" id="compressLevel">
-                  <option value="mild">mild</option>
-                  <option value="best" selected>best</option>
-                  <option value="heavy">heavy</option>
-                </select>
-              </label>
-              <span class="opt-note">mild keeps more quality, best balances size, heavy compresses hardest</span>
-            </div>
-            <button class="exec-btn" id="compressExecBtn" disabled>
-              <span class="prompt-char">$</span> execute compress
-            </button>
-          </div>
+          <!-- File List -->
+          <div class="file-list" id="fileList"></div>
 
-          <div class="terminal-output" id="compressOutput"></div>
-        </section>
+          <!-- Options Panel (dynamic based on operation) -->
+          <div class="options-panel" id="optionsPanel"></div>
 
-        <!-- JOBS PANEL -->
-        <section class="panel" id="panel-jobs">
-          <div class="code-block">
-            <div class="code-header">
-              <span class="code-lang">log</span>
-              <span class="code-file">jobs.log</span>
-            </div>
-            <div class="code-body">
-              <pre><code><span class="ln">1</span>  <span class="cmt"># Job queue log</span>
-<span class="ln">2</span>  <span class="cmt"># All submitted jobs and their statuses are shown below.</span>
-<span class="ln">3</span>  <span class="cmt"># Jobs are processed in FIFO order with concurrency: 2</span></code></pre>
+          <!-- Execute Button -->
+          <button class="exec-btn" id="execBtn" disabled>
+            <span class="exec-btn-text" id="execBtnText">Process PDF</span>
+            <span class="exec-btn-loader" id="execBtnLoader">
+              <span class="spinner"></span>
+              <span>Processing...</span>
+            </span>
+          </button>
+
+          <!-- Progress Bar -->
+          <div class="progress-bar-wrap" id="progressWrap" style="display:none;">
+            <div class="progress-label" id="progressLabel">Uploading...</div>
+            <div class="progress-track">
+              <div class="progress-fill" id="progressFill"></div>
             </div>
           </div>
 
-          <div class="terminal-output" id="jobsOutput">
-            <div class="prompt-line">
-              <span class="prompt">user@pdf-toolkit:~$</span> <span class="cmd">tail -f jobs.log</span>
+          <!-- Result Panel -->
+          <div class="result-panel" id="resultPanel" style="display:none;">
+            <div class="result-icon">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
             </div>
-            <div class="output-text cmt">Waiting for jobs...</div>
+            <h3 class="result-title">Done!</h3>
+            <p class="result-meta" id="resultMeta"></p>
+            <a class="download-btn" id="downloadBtn" href="#" download>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+              Download Result
+            </a>
+            <button class="btn-secondary" id="processAnotherBtn">Process another file</button>
           </div>
-        </section>
+        </div>
 
-      </main>
-    </div>
-
-    <!-- ── CLI Input ──────────────────────────────────────────── -->
-    <div class="cli-bar">
-      <div class="cli-prompt">
-        <span class="prompt">user@pdf-toolkit:~$</span>
+        <!-- Right Column: PDF Page Preview -->
+        <div class="op-col-right" id="opColRight">
+          <div class="preview-panel" id="previewPanel" style="display:none;">
+            <div class="preview-header">
+              <h3 class="preview-title" id="previewTitle">Page Preview</h3>
+              <span class="preview-info" id="previewInfo"></span>
+            </div>
+            <div class="preview-hint" id="previewHint"></div>
+            <div class="preview-grid" id="previewGrid"></div>
+            <div class="preview-loading" id="previewLoading" style="display:none;">
+              <span class="spinner"></span>
+              <span>Rendering pages...</span>
+            </div>
+          </div>
+        </div>
       </div>
-      <input type="text" class="cli-input" id="cliInput" placeholder="type a command..." autocomplete="off" spellcheck="false" />
-      <span class="cursor-block" id="cursorBlock">&#9608;</span>
-    </div>
+    </section>
 
-    <!-- ── Status Bar ─────────────────────────────────────────── -->
-    <footer class="status-bar">
-      <div class="status-left">
-        <span class="vim-mode" id="vimMode">NORMAL</span>
-        <span class="git-branch">&#9741; main</span>
-      </div>
-      <div class="status-center">
-        <span class="status-file" id="statusFile">welcome.md</span>
-      </div>
-      <div class="status-right">
-        <span>UTF-8</span>
-        <span>LF</span>
-        <span>JavaScript</span>
-      </div>
-    </footer>
-  </div>
+  </main>
+
+  <!-- ── Footer ──────────────────────────────────── -->
+  <footer class="footer">
+    <p>PDF Toolkit — Built with Node.js & pdf-lib. Files are never stored permanently.</p>
+  </footer>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="/js/app.js"></script>
