@@ -651,13 +651,17 @@ async function renderPreview(file) {
       if (endInput) endInput.addEventListener('input', updatePreviewHighlights);
     }
 
-    // Wire remove-pages text input to sync thumbnails
+    // Wire remove-pages text input to sync thumbnails (debounced)
     if (state.currentTool === 'remove-pages') {
       const pagesInput = $('#opt-pages');
       if (pagesInput) {
+        let syncTimer = null;
         pagesInput.addEventListener('input', () => {
-          syncSelectedPagesFromInput(pagesInput.value);
-          updatePreviewHighlights();
+          clearTimeout(syncTimer);
+          syncTimer = setTimeout(() => {
+            syncSelectedPagesFromInput(pagesInput.value);
+            updatePreviewHighlights();
+          }, 150);
         });
       }
     }
@@ -716,17 +720,24 @@ function syncSelectedPagesFromInput(value) {
   const pages = new Set();
   const chunks = value.split(',').map(s => s.trim()).filter(Boolean);
 
+  const addIfValid = (n) => {
+    if (Number.isInteger(n) && n >= 1 && n <= state.previewPages) pages.add(n);
+  };
+
   for (const chunk of chunks) {
     if (chunk.includes('-')) {
-      const [rawStart, rawEnd] = chunk.split('-').map(s => parseInt(s.trim(), 10));
+      const parts = chunk.split('-').map(s => s.trim());
+      const rawStart = parseInt(parts[0], 10);
+      const rawEnd = parseInt(parts[1], 10);
+
       if (Number.isInteger(rawStart) && Number.isInteger(rawEnd) && rawStart <= rawEnd) {
-        for (let p = rawStart; p <= rawEnd; p++) {
-          if (p >= 1 && p <= state.previewPages) pages.add(p);
-        }
+        for (let p = rawStart; p <= rawEnd; p++) addIfValid(p);
+      } else if (Number.isInteger(rawStart)) {
+        // Partial range like "3-" while still typing — keep the start page selected
+        addIfValid(rawStart);
       }
     } else {
-      const p = parseInt(chunk, 10);
-      if (Number.isInteger(p) && p >= 1 && p <= state.previewPages) pages.add(p);
+      addIfValid(parseInt(chunk, 10));
     }
   }
 
