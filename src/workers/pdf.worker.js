@@ -46,18 +46,19 @@ let cleanupTimer = null;
 
 // Process a single job. This is where the actual PDF work happens.
 const processJob = async (job) => {
+  if (queue.isJobCancelled(job.id)) {
+    logger.info(`Job ${job.id} was cancelled before processing started — skipping`);
+    return;
+  }
+
   const { operation, inputPaths, outputPath, options } = job.data;
 
   try {
     queue.markProcessing(job.id);
 
-    // Look up the handler function from the PDF registry
     const operationConfig = getOperation(operation);
     const { handler } = operationConfig;
 
-    // Call the pure PDF function -- same ones from Stage 3!
-    // merge.js, split.js, compress.js -- they don't know they're in a worker.
-    // That's the beauty of pure functions.
     let result;
     if (inputPaths.length === 1) {
       result = await handler(inputPaths[0], outputPath, options);
@@ -65,8 +66,17 @@ const processJob = async (job) => {
       result = await handler(inputPaths, outputPath, options);
     }
 
+    if (queue.isJobCancelled(job.id)) {
+      logger.info(`Job ${job.id} completed but was cancelled mid-flight — discarding result`);
+      return;
+    }
+
     queue.markCompleted(job.id, result);
   } catch (err) {
+    if (queue.isJobCancelled(job.id)) {
+      logger.info(`Job ${job.id} errored after cancellation — ignoring`);
+      return;
+    }
     queue.markFailed(job.id, err.message);
   }
 };

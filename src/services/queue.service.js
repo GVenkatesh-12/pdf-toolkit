@@ -62,6 +62,7 @@ export const JOB_STATES = {
   PROCESSING: 'processing',
   COMPLETED: 'completed',
   FAILED: 'failed',
+  CANCELLED: 'cancelled',
 };
 
 // ── Create a new job ───────────────────────────────────────────
@@ -142,15 +143,15 @@ export const markFailed = (jobId, error) => {
   const job = jobs.get(jobId);
   if (!job) return;
 
+  if (job.state === JOB_STATES.CANCELLED) return;
+
   if (job.attempts < job.maxRetries) {
-    // Retry: put it back in the queue
     job.state = JOB_STATES.QUEUED;
     job.error = error;
     logger.warn(`Job ${jobId} failed (attempt ${job.attempts}/${job.maxRetries}), will retry`, {
       error,
     });
   } else {
-    // Exhausted retries: permanently failed
     job.state = JOB_STATES.FAILED;
     job.error = error;
     job.completedAt = Date.now();
@@ -160,10 +161,33 @@ export const markFailed = (jobId, error) => {
   }
 };
 
+// ── Transition: queued|processing → cancelled ───────────────────
+export const markCancelled = (jobId) => {
+  const job = jobs.get(jobId);
+  if (!job) return false;
+
+  if (job.state === JOB_STATES.COMPLETED || job.state === JOB_STATES.CANCELLED) {
+    return false;
+  }
+
+  const previousState = job.state;
+  job.state = JOB_STATES.CANCELLED;
+  job.completedAt = Date.now();
+  job.error = 'Cancelled by user';
+  logger.info(`Job ${jobId} cancelled (was ${previousState})`);
+  return true;
+};
+
+// ── Check if a job has been cancelled ───────────────────────────
+export const isJobCancelled = (jobId) => {
+  const job = jobs.get(jobId);
+  return job?.state === JOB_STATES.CANCELLED;
+};
+
 // ── Get queue statistics ───────────────────────────────────────
 // Useful for monitoring and debugging.
 export const getQueueStats = () => {
-  const stats = { queued: 0, processing: 0, completed: 0, failed: 0, total: 0 };
+  const stats = { queued: 0, processing: 0, completed: 0, failed: 0, cancelled: 0, total: 0 };
   for (const job of jobs.values()) {
     stats[job.state]++;
     stats.total++;
@@ -179,7 +203,7 @@ export const cleanupOldJobs = () => {
   let cleaned = 0;
 
   for (const [jobId, job] of jobs.entries()) {
-    const isFinished = job.state === JOB_STATES.COMPLETED || job.state === JOB_STATES.FAILED;
+    const isFinished = job.state === JOB_STATES.COMPLETED || job.state === JOB_STATES.FAILED || job.state === JOB_STATES.CANCELLED;
     const isOld = (now - job.createdAt) > queueConfig.jobTTL;
 
     if (isFinished && isOld) {
@@ -219,7 +243,7 @@ export const formatJobForResponse = (job) => {
     response.result = job.result;
   }
 
-  if (job.state === JOB_STATES.FAILED && job.error) {
+  if ((job.state === JOB_STATES.FAILED || job.state === JOB_STATES.CANCELLED) && job.error) {
     response.error = job.error;
   }
 

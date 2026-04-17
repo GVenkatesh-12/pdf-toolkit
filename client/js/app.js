@@ -32,9 +32,13 @@ const state = {
   files: [],
   isProcessing: false,
   // Preview state
-  previewPages: 0,          // total pages in the current PDF
-  selectedPages: new Set(), // pages marked for removal (1-based)
-  pdfDoc: null,             // pdf.js document instance
+  previewPages: 0,
+  selectedPages: new Set(),
+  pdfDoc: null,
+  // Cancellation state
+  activeXhr: null,
+  activeJobId: null,
+  pollAbortController: null,
 };
 
 // Tools that benefit from page preview
@@ -291,6 +295,9 @@ function openTool(toolName) {
 }
 
 function goHome() {
+  if (state.isProcessing) {
+    cancelCurrentOperation();
+  }
   state.currentTool = null;
   state.files = [];
   clearPreview();
@@ -787,23 +794,69 @@ function updatePreviewHighlights() {
   }
 }
 
+// ── Cancellation ──────────────────────────────────────────────
+function cleanupProcessingState() {
+  state.activeXhr = null;
+  state.activeJobId = null;
+  state.pollAbortController = null;
+}
+
+async function cancelCurrentOperation() {
+  if (!state.isProcessing) return;
+
+  if (state.activeXhr) {
+    state.activeXhr.abort();
+    state.activeXhr = null;
+  }
+
+  if (state.pollAbortController) {
+    state.pollAbortController.abort();
+    state.pollAbortController = null;
+  }
+
+  if (state.activeJobId) {
+    try {
+      await fetch(`${API}/jobs/${state.activeJobId}`, {
+        method: 'DELETE',
+        headers: apiHeaders(),
+      });
+    } catch {
+      // Best effort — server may already be done
+    }
+    state.activeJobId = null;
+  }
+
+  state.isProcessing = false;
+  hideProgress();
+
+  const btn = $('#execBtn');
+  btn.classList.remove('loading');
+  updateExecButton();
+  showCancelBtn(false);
+  showToast('Operation cancelled.', 'info');
+}
+
+function showCancelBtn(visible) {
+  const btn = $('#cancelBtn');
+  if (btn) btn.style.display = visible ? 'inline-flex' : 'none';
+}
+
 // ── Job Submission ─────────────────────────────────────────────
 async function submitJob() {
   if (state.isProcessing || state.files.length === 0) return;
 
-  const tool = TOOLS[state.currentTool];
   const btn = $('#execBtn');
 
   state.isProcessing = true;
   btn.classList.add('loading');
   btn.disabled = true;
   hideResult();
+  showCancelBtn(true);
 
   const formData = new FormData();
   state.files.forEach((f) => formData.append('files', f));
   formData.append('operation', state.currentTool);
 
-  // Add option values
   const options = getOptionValues();
   for (const [key, value] of Object.entries(options)) {
     if (value !== '') formData.append(key, value);
@@ -812,24 +865,26 @@ async function submitJob() {
   showProgress('Uploading files...');
 
   try {
-    // Use XMLHttpRequest for upload progress
     const { data } = await uploadWithProgress(formData);
+
+    if (!state.isProcessing) return;
 
     if (data.status !== 'accepted') {
       throw new Error(data.message || 'Server rejected the request');
     }
 
     const { jobId } = data.data;
+    state.activeJobId = jobId;
     showProgress('Processing...', -1);
 
-    // Poll for completion
     const result = await pollJobUntilDone(jobId);
 
+    if (!state.isProcessing) return;
+
     hideProgress();
+    showCancelBtn(false);
 
     if (result.state === 'completed') {
-      // Append sessionId to the download URL so the browser can access it
-      // (plain <a href> navigation doesn't send the X-Session-ID header)
       const rawUrl = result.downloadUrl || `${API}/jobs/${jobId}/download`;
       const sep = rawUrl.includes('?') ? '&' : '?';
       const downloadUrl = `${rawUrl}${sep}sessionId=${SESSION_ID}`;
@@ -851,25 +906,34 @@ async function submitJob() {
       showResult(metaHtml || 'Your PDF has been processed successfully.', downloadUrl, downloadName);
       showToast('PDF processed successfully!', 'success');
 
-      // Reset files
       state.files = [];
       renderFileList();
+    } else if (result.state === 'cancelled') {
+      // Already handled by cancelCurrentOperation
+      return;
     } else {
       throw new Error(result.error || 'Processing failed');
     }
   } catch (err) {
+    if (!state.isProcessing) return;
     hideProgress();
+    showCancelBtn(false);
+    if (err.name === 'AbortError') return;
     showToast(err.message || 'Something went wrong. Please try again.', 'error');
   } finally {
     state.isProcessing = false;
     btn.classList.remove('loading');
     updateExecButton();
+    showCancelBtn(false);
+    cleanupProcessingState();
   }
 }
 
 function uploadWithProgress(formData) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    state.activeXhr = xhr;
+
     xhr.open('POST', `${API}/jobs`);
     xhr.setRequestHeader('X-Session-ID', SESSION_ID);
 
@@ -881,6 +945,7 @@ function uploadWithProgress(formData) {
     };
 
     xhr.onload = () => {
+      state.activeXhr = null;
       try {
         const data = JSON.parse(xhr.responseText);
         resolve({ data });
@@ -889,38 +954,62 @@ function uploadWithProgress(formData) {
       }
     };
 
-    xhr.onerror = () => reject(new Error('Network error. Is the server running?'));
+    xhr.onerror = () => {
+      state.activeXhr = null;
+      reject(new Error('Network error. Is the server running?'));
+    };
+
+    xhr.onabort = () => {
+      state.activeXhr = null;
+      reject(new DOMException('Upload cancelled', 'AbortError'));
+    };
+
     xhr.send(formData);
   });
 }
 
 async function pollJobUntilDone(jobId, maxPolls = 300) {
-  for (let i = 0; i < maxPolls; i++) {
-    await new Promise((r) => setTimeout(r, 800));
+  const controller = new AbortController();
+  state.pollAbortController = controller;
 
-    try {
-      const res = await fetch(`${API}/jobs/${jobId}`, {
-        headers: apiHeaders(),
-      });
-      const data = await res.json();
-      const job = data.data;
+  try {
+    for (let i = 0; i < maxPolls; i++) {
+      await new Promise((r) => setTimeout(r, 800));
 
-      if (job.state === 'completed' || job.state === 'failed') {
-        return job;
+      if (controller.signal.aborted) {
+        throw new DOMException('Polling cancelled', 'AbortError');
       }
 
-      // Update progress label
-      showProgress(`Processing... (attempt ${job.attempts || 1})`, -1);
-    } catch {
-      // Retry on network error
-    }
-  }
+      try {
+        const res = await fetch(`${API}/jobs/${jobId}`, {
+          headers: apiHeaders(),
+          signal: controller.signal,
+        });
+        const data = await res.json();
+        const job = data.data;
 
-  throw new Error('Processing timed out. Please try again.');
+        if (job.state === 'completed' || job.state === 'failed' || job.state === 'cancelled') {
+          return job;
+        }
+
+        showProgress(`Processing... (attempt ${job.attempts || 1})`, -1);
+      } catch (err) {
+        if (err.name === 'AbortError') throw err;
+        // Retry on other network errors
+      }
+    }
+
+    throw new Error('Processing timed out. Please try again.');
+  } finally {
+    state.pollAbortController = null;
+  }
 }
 
 // Execute button
 $('#execBtn')?.addEventListener('click', submitJob);
+
+// Cancel button
+$('#cancelBtn')?.addEventListener('click', cancelCurrentOperation);
 
 // ── Queue Stats ────────────────────────────────────────────────
 async function refreshQueueStats() {
@@ -948,11 +1037,29 @@ async function refreshQueueStats() {
 setInterval(refreshQueueStats, 5000);
 refreshQueueStats();
 
+// ── Page Unload Protection ─────────────────────────────────────
+window.addEventListener('beforeunload', (e) => {
+  if (state.isProcessing) {
+    e.preventDefault();
+    return '';
+  }
+});
+
+window.addEventListener('unload', () => {
+  if (state.activeJobId) {
+    const url = `${API}/jobs/${state.activeJobId}`;
+    navigator.sendBeacon(url + `?_method=DELETE&sessionId=${SESSION_ID}`);
+  }
+});
+
 // ── Keyboard Shortcuts ─────────────────────────────────────────
 document.addEventListener('keydown', (e) => {
-  // Escape to go back
   if (e.key === 'Escape' && state.currentView === 'operation') {
-    goHome();
+    if (state.isProcessing) {
+      cancelCurrentOperation();
+    } else {
+      goHome();
+    }
   }
 });
 

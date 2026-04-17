@@ -861,6 +861,33 @@ a { color: inherit; text-decoration: none; }
   pointer-events: none;
 }
 
+.exec-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  align-self: flex-start;
+}
+
+.cancel-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 24px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--surface-2);
+  color: var(--danger, #ef4444);
+  border: 1.5px solid var(--danger, #ef4444);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.cancel-btn:hover {
+  background: var(--danger, #ef4444);
+  color: #fff;
+}
+.cancel-btn svg { flex-shrink: 0; }
+
 .exec-btn-text { transition: opacity var(--transition-fast); }
 .exec-btn.loading .exec-btn-text { display: none; }
 .exec-btn-loader { display: none; align-items: center; gap: 8px; }
@@ -1086,7 +1113,9 @@ a { color: inherit; text-decoration: none; }
   .toast-container { right: 12px; left: 12px; }
   .toast { min-width: auto; }
   .option-group { padding: 14px 16px; }
+  .exec-btn-group { width: 100%; }
   .exec-btn { width: 100%; justify-content: center; }
+  .cancel-btn { flex-shrink: 0; }
   .download-btn { width: 100%; justify-content: center; }
 }
 

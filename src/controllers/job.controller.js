@@ -134,6 +134,39 @@ export const downloadJobResult = (req, res, next) => {
   }
 };
 
+// DELETE /api/jobs/:jobId -- cancel a job (session-scoped)
+export const cancelJob = (req, res, next) => {
+  try {
+    const job = queue.getJob(req.params.jobId);
+
+    if (!job) {
+      throw new NotFoundError('Job');
+    }
+
+    if (job.data.sessionId && job.data.sessionId !== req.sessionId) {
+      throw new NotFoundError('Job');
+    }
+
+    const cancelled = queue.markCancelled(req.params.jobId);
+
+    if (!cancelled) {
+      return res.json({
+        status: 'success',
+        message: `Job is already "${job.state}" and cannot be cancelled`,
+        data: queue.formatJobForResponse(job),
+      });
+    }
+
+    res.json({
+      status: 'success',
+      message: 'Job cancelled',
+      data: queue.formatJobForResponse(queue.getJob(req.params.jobId)),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // GET /api/jobs -- queue statistics
 export const getStats = (_req, res) => {
   const stats = queue.getQueueStats();
