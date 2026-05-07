@@ -35,6 +35,9 @@ const state = {
   previewPages: 0,
   selectedPages: new Set(),
   pdfDoc: null,
+  pdfLoadingTask: null,
+  previewRenderId: 0,
+  previewRenderTasks: new Set(),
   // Cancellation state
   activeXhr: null,
   activeJobId: null,
@@ -43,6 +46,15 @@ const state = {
 
 // Tools that benefit from page preview
 const PREVIEW_TOOLS = new Set(['split', 'remove-pages', 'rotate']);
+const PDFJS_WORKER_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const PREVIEW_THUMB_WIDTH = 150;
+const CPU_COUNT = typeof navigator !== 'undefined' && navigator.hardwareConcurrency
+  ? navigator.hardwareConcurrency
+  : 4;
+const PREVIEW_RENDER_CONCURRENCY = Math.max(
+  2,
+  Math.min(4, CPU_COUNT - 1)
+);
 
 // ── Tool Definitions ───────────────────────────────────────────
 const TOOLS = {
@@ -539,7 +551,44 @@ $('#processAnotherBtn')?.addEventListener('click', () => {
 // - rotate: shows pages so the user knows what they're rotating
 // ═══════════════════════════════════════════════════════════════
 
+function ignoreAsyncError(promise) {
+  if (promise && typeof promise.catch === 'function') {
+    promise.catch(() => {});
+  }
+}
+
+function isPreviewRenderActive(renderId) {
+  return renderId === state.previewRenderId;
+}
+
+function isPreviewCancelError(err) {
+  return err?.name === 'RenderingCancelledException'
+    || err?.name === 'AbortException'
+    || /cancel|destroy|abort/i.test(err?.message || '');
+}
+
+function cancelPreviewRendering() {
+  state.previewRenderId += 1;
+
+  for (const task of state.previewRenderTasks) {
+    try {
+      task.cancel();
+    } catch {
+      // Render task may have already completed.
+    }
+  }
+  state.previewRenderTasks.clear();
+
+  if (state.pdfLoadingTask) {
+    const loadingTask = state.pdfLoadingTask;
+    state.pdfLoadingTask = null;
+    ignoreAsyncError(loadingTask.destroy?.());
+  }
+}
+
 function clearPreview() {
+  cancelPreviewRendering();
+
   const panel = $('#previewPanel');
   const grid = $('#previewGrid');
   panel.style.display = 'none';
@@ -547,13 +596,129 @@ function clearPreview() {
   state.previewPages = 0;
   state.selectedPages = new Set();
   if (state.pdfDoc) {
-    state.pdfDoc.destroy();
+    const pdfDoc = state.pdfDoc;
     state.pdfDoc = null;
+    ignoreAsyncError(pdfDoc.destroy());
+  }
+}
+
+function createPreviewThumb(pageNum) {
+  const thumb = document.createElement('div');
+  thumb.className = 'preview-thumb preview-thumb--loading';
+  thumb.dataset.page = pageNum;
+
+  const placeholder = document.createElement('div');
+  placeholder.className = 'preview-thumb-placeholder';
+  placeholder.textContent = 'Rendering...';
+  thumb.appendChild(placeholder);
+
+  const label = document.createElement('div');
+  label.className = 'preview-thumb-label';
+  label.textContent = `Page ${pageNum}`;
+  thumb.appendChild(label);
+
+  if (state.currentTool === 'remove-pages') {
+    thumb.addEventListener('click', () => togglePageSelection(pageNum));
+  }
+  if (state.currentTool === 'split') {
+    thumb.addEventListener('click', () => handleSplitPageClick(pageNum));
+  }
+
+  return thumb;
+}
+
+async function renderPreviewTile(pdf, pageNum, thumb, renderId) {
+  if (!isPreviewRenderActive(renderId) || !thumb) return false;
+
+  let page = null;
+  try {
+    page = await pdf.getPage(pageNum);
+    if (!isPreviewRenderActive(renderId)) return false;
+
+    const viewport = page.getViewport({ scale: 1 });
+    const scale = PREVIEW_THUMB_WIDTH / viewport.width;
+    const scaledViewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(scaledViewport.width);
+    canvas.height = Math.ceil(scaledViewport.height);
+    canvas.setAttribute('aria-label', `Page ${pageNum} preview`);
+
+    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    if (!ctx) throw new Error('Canvas rendering is not supported in this browser.');
+
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const renderTask = page.render({
+      canvasContext: ctx,
+      viewport: scaledViewport,
+      // pdf.js throttles display intent with requestAnimationFrame in hidden tabs.
+      // Print intent keeps thumbnail rendering moving when the user switches tabs.
+      intent: 'print',
+      background: 'white',
+    });
+
+    state.previewRenderTasks.add(renderTask);
+    try {
+      await renderTask.promise;
+    } finally {
+      state.previewRenderTasks.delete(renderTask);
+    }
+
+    if (!isPreviewRenderActive(renderId)) return false;
+
+    const placeholder = thumb.querySelector('.preview-thumb-placeholder');
+    if (placeholder) {
+      placeholder.replaceWith(canvas);
+    } else {
+      thumb.insertBefore(canvas, thumb.firstChild);
+    }
+    thumb.classList.remove('preview-thumb--loading', 'preview-thumb--error');
+    return true;
+  } catch (err) {
+    if (!isPreviewRenderActive(renderId) || isPreviewCancelError(err)) return false;
+
+    thumb.classList.remove('preview-thumb--loading');
+    thumb.classList.add('preview-thumb--error');
+    const placeholder = thumb.querySelector('.preview-thumb-placeholder');
+    if (placeholder) placeholder.textContent = 'Preview unavailable';
+    return false;
+  } finally {
+    page?.cleanup?.();
+  }
+}
+
+async function renderPreviewTiles(pdf, grid, info, renderId) {
+  let nextPage = 1;
+  let rendered = 0;
+  const totalPages = pdf.numPages;
+  const workerCount = Math.min(PREVIEW_RENDER_CONCURRENCY, totalPages);
+
+  const renderNext = async () => {
+    while (isPreviewRenderActive(renderId)) {
+      const pageNum = nextPage;
+      nextPage += 1;
+      if (pageNum > totalPages) return;
+
+      const thumb = grid.querySelector(`.preview-thumb[data-page="${pageNum}"]`);
+      const didRender = await renderPreviewTile(pdf, pageNum, thumb, renderId);
+      if (didRender && isPreviewRenderActive(renderId)) {
+        rendered += 1;
+        info.textContent = `${totalPages} page${totalPages > 1 ? 's' : ''} · rendered ${rendered}/${totalPages}`;
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: workerCount }, renderNext));
+
+  if (isPreviewRenderActive(renderId)) {
+    info.textContent = `${totalPages} page${totalPages > 1 ? 's' : ''}`;
   }
 }
 
 async function renderPreview(file) {
   clearPreview();
+  const renderId = state.previewRenderId;
 
   const panel = $('#previewPanel');
   const grid = $('#previewGrid');
@@ -581,12 +746,21 @@ async function renderPreview(file) {
   try {
     // Configure pdf.js worker
     if (typeof pdfjsLib !== 'undefined') {
-      pdfjsLib.GlobalWorkerOptions.workerSrc =
-        'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_SRC;
     }
 
     const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    if (!isPreviewRenderActive(renderId)) return;
+
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+    state.pdfLoadingTask = loadingTask;
+    const pdf = await loadingTask.promise;
+    if (!isPreviewRenderActive(renderId)) {
+      ignoreAsyncError(pdf.destroy());
+      return;
+    }
+
+    state.pdfLoadingTask = null;
     state.pdfDoc = pdf;
     state.previewPages = pdf.numPages;
 
@@ -602,53 +776,20 @@ async function renderPreview(file) {
 
     loading.style.display = 'none';
 
-    // Render all pages as thumbnails
-    const thumbWidth = 180; // px for rendering quality
-
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      const page = await pdf.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 1 });
-      const scale = thumbWidth / viewport.width;
-      const scaledViewport = page.getViewport({ scale });
-
-      const canvas = document.createElement('canvas');
-      canvas.width = scaledViewport.width;
-      canvas.height = scaledViewport.height;
-
-      const ctx = canvas.getContext('2d');
-      await page.render({ canvasContext: ctx, viewport: scaledViewport }).promise;
-
-      const thumb = document.createElement('div');
-      thumb.className = 'preview-thumb';
-      thumb.dataset.page = pageNum;
-      thumb.appendChild(canvas);
-
-      const label = document.createElement('div');
-      label.className = 'preview-thumb-label';
-      label.textContent = `Page ${pageNum}`;
-      thumb.appendChild(label);
-
-      // Click handler for remove-pages
-      if (state.currentTool === 'remove-pages') {
-        thumb.addEventListener('click', () => togglePageSelection(pageNum));
-      }
-      // Click handler for split — click to set range start or end
-      if (state.currentTool === 'split') {
-        thumb.addEventListener('click', () => handleSplitPageClick(pageNum));
-      }
-
-      grid.appendChild(thumb);
+      grid.appendChild(createPreviewThumb(pageNum));
     }
 
     // Initial highlight pass
     updatePreviewHighlights();
+    ignoreAsyncError(renderPreviewTiles(pdf, grid, info, renderId));
 
     // Wire split inputs to update highlights in real time
     if (state.currentTool === 'split') {
       const startInput = $('#opt-start');
       const endInput = $('#opt-end');
-      if (startInput) startInput.addEventListener('input', updatePreviewHighlights);
-      if (endInput) endInput.addEventListener('input', updatePreviewHighlights);
+      if (startInput) startInput.oninput = updatePreviewHighlights;
+      if (endInput) endInput.oninput = updatePreviewHighlights;
     }
 
     // Wire remove-pages text input to sync thumbnails (debounced)
@@ -656,17 +797,18 @@ async function renderPreview(file) {
       const pagesInput = $('#opt-pages');
       if (pagesInput) {
         let syncTimer = null;
-        pagesInput.addEventListener('input', () => {
+        pagesInput.oninput = () => {
           clearTimeout(syncTimer);
           syncTimer = setTimeout(() => {
             syncSelectedPagesFromInput(pagesInput.value);
             updatePreviewHighlights();
           }, 150);
-        });
+        };
       }
     }
 
   } catch (err) {
+    if (!isPreviewRenderActive(renderId) || isPreviewCancelError(err)) return;
     loading.style.display = 'none';
     grid.innerHTML = `<p style="color:var(--text-muted);font-size:13px;grid-column:1/-1;text-align:center;padding:24px;">Could not render preview: ${escapeHtml(err.message)}</p>`;
   }
